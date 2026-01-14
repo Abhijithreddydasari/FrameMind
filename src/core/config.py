@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     clip_device: Literal["cpu", "cuda", "mps"] = "cpu"
     frame_extraction_fps: float = 2.0
     max_frames_per_video: int = 1000
-    target_keyframes: int = 15
+    target_keyframes: int = 30
 
     # Shot detection
     shot_threshold: float = 0.3
