@@ -118,24 +118,45 @@ curl -X POST "http://localhost:8000/api/v1/query/550e8400-e29b-41d4-a716-4466554
 
 ```
 framemind/
+├── docker/
+│   ├── Dockerfile              # Multi-stage API build
+│   ├── Dockerfile.worker       # Worker with ML deps
+│   └── docker-compose.yml      # Full local stack
 ├── src/
-│   ├── api/              # FastAPI application
-│   │   ├── main.py       # App factory
-│   │   ├── routes/       # API endpoints
-│   │   └── middleware.py # Rate limiting
-│   ├── ml/               # ML/CV modules
-│   │   ├── clip_scorer.py    # CLIP embeddings
-│   │   ├── shot_detector.py  # Scene detection
-│   │   └── frame_selector.py # Intelligent selection
-│   ├── workers/          # Async processing
-│   │   ├── pipeline.py   # ARQ tasks
-│   │   └── orchestrator.py
-│   ├── cache/            # Redis caching
-│   ├── storage/          # File storage
-│   └── core/             # Shared utilities
-├── docker/               # Docker configuration
-├── tests/                # Test suite
-└── scripts/              # Utility scripts
+│   ├── api/                    # FastAPI layer
+│   │   ├── main.py             # App factory + lifespan
+│   │   ├── deps.py             # Dependency injection
+│   │   ├── middleware.py       # Rate limiting
+│   │   └── routes/             # Endpoints
+│   ├── ingest/                 # Video ingestion
+│   │   ├── validator.py        # Format + size validation
+│   │   ├── preprocessor.py     # FFmpeg normalization
+│   │   └── extractor.py        # Frame extraction
+│   ├── ml/                     # Core ML (non-trivial)
+│   │   ├── shot_detector.py    # Histogram scene detection
+│   │   ├── clip_scorer.py      # CLIP embeddings + scoring
+│   │   ├── frame_selector.py   # Intelligent selection
+│   │   └── embeddings.py       # Vector ops + index
+│   ├── vlm/                    # VLM integration
+│   │   ├── client.py           # OpenAI + Anthropic clients
+│   │   ├── prompt_builder.py   # Context-aware prompts
+│   │   └── aggregator.py       # Multi-frame aggregation
+│   ├── workers/                # Async processing
+│   │   ├── pipeline.py         # ARQ task definitions
+│   │   ├── orchestrator.py     # Job state machine
+│   │   └── callbacks.py        # Webhooks
+│   ├── cache/                  # Redis layer
+│   │   └── redis_cache.py      # Caching + rate limiting
+│   ├── storage/                # Storage abstraction
+│   │   ├── base.py             # Abstract interface
+│   │   ├── local.py            # Filesystem backend
+│   │   └── metadata.py         # SQLAlchemy models
+│   └── core/                   # Shared kernel
+├── tests/                      # Test suite
+├── scripts/                    # Utilities
+├── pyproject.toml              # Dependencies
+├── Makefile                    # Dev commands
+└── README.md                   # Documentation
 ```
 
 ## Configuration
