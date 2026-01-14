@@ -65,7 +65,12 @@ class TestShotDetector:
 
     def test_detect_boundaries_different_frames(self) -> None:
         """Test that different frames trigger boundaries."""
-        detector = ShotDetector(HistogramConfig(threshold=0.1, min_scene_length=1))
+        # Disable adaptive threshold to ensure consistent behavior
+        detector = ShotDetector(HistogramConfig(
+            threshold=0.1, 
+            min_scene_length=1,
+            adaptive_threshold=False,
+        ))
         
         # Create very different frames
         frames = [
