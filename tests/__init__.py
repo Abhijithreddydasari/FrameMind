@@ -1,0 +1,1 @@
+"""FrameMind test suite."""

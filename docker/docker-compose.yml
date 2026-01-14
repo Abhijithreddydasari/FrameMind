@@ -1,0 +1,111 @@
+# FrameMind Development Stack
+# Local-first Docker Compose configuration
+
+version: "3.9"
+
+services:
+  # ============ API Server ============
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: development
+    container_name: framemind-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../src:/app/src:ro
+      - ../data:/app/data
+      - model-cache:/root/.cache/huggingface
+    environment:
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=sqlite+aiosqlite:///./data/framemind.db
+      - STORAGE_PATH=/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - framemind-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ============ Background Worker ============
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.worker
+      target: development
+    container_name: framemind-worker
+    volumes:
+      - ../src:/app/src:ro
+      - ../data:/app/data
+      - model-cache:/root/.cache/huggingface
+    environment:
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=sqlite+aiosqlite:///./data/framemind.db
+      - STORAGE_PATH=/app/data
+      - CLIP_DEVICE=cpu
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - framemind-net
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  # ============ Redis ============
+  redis:
+    image: redis:7-alpine
+    container_name: framemind-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    networks:
+      - framemind-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============ Redis Commander (optional UI) ============
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: framemind-redis-ui
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    depends_on:
+      - redis
+    networks:
+      - framemind-net
+    profiles:
+      - debug
+
+networks:
+  framemind-net:
+    driver: bridge
+
+volumes:
+  redis-data:
+    driver: local
+  model-cache:
+    driver: local

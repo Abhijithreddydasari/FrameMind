@@ -1,0 +1,66 @@
+# FrameMind Worker
+# ARQ worker for async video processing
+
+FROM python:3.11-slim as base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+# Install system dependencies (including FFmpeg for video processing)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ============ Builder Stage ============
+FROM base as builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --upgrade pip setuptools wheel
+
+COPY pyproject.toml ./
+
+# Install full dependencies including ML packages
+RUN pip install --no-cache-dir .
+
+# ============ Production Stage ============
+FROM base as production
+
+# Create non-root user
+RUN groupadd -r framemind && useradd -r -g framemind framemind
+
+# Copy installed packages
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Copy application code
+COPY src/ ./src/
+
+# Create data directory
+RUN mkdir -p /app/data /app/models && chown -R framemind:framemind /app
+
+# Switch to non-root user
+USER framemind
+
+# Pre-download CLIP model (optional, can be removed if models are mounted)
+# RUN python -c "from transformers import CLIPModel, CLIPProcessor; CLIPModel.from_pretrained('openai/clip-vit-base-patch32'); CLIPProcessor.from_pretrained('openai/clip-vit-base-patch32')"
+
+# Run ARQ worker
+CMD ["arq", "src.workers.pipeline.WorkerSettings"]
+
+# ============ Development Stage ============
+FROM base as development
+
+COPY pyproject.toml ./
+RUN pip install --no-cache-dir -e ".[dev]"
+
+COPY . .
+
+CMD ["arq", "src.workers.pipeline.WorkerSettings", "--watch", "src"]
