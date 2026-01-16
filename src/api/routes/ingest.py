@@ -8,7 +8,7 @@ import aiofiles
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from src.api.deps import RedisCacheDep, SettingsDep
+from src.api.deps import MetadataStoreDep, RedisCacheDep, SettingsDep
 from src.core.exceptions import UnsupportedFormatError, VideoTooLargeError
 from src.core.logging import get_logger
 from src.core.models import JobStatus, VideoUploadResponse
@@ -34,6 +34,7 @@ class IngestStatusResponse(BaseModel):
 async def upload_video(
     settings: SettingsDep,
     cache: RedisCacheDep,
+    metadata_store: MetadataStoreDep,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
 ) -> VideoUploadResponse:
@@ -95,6 +96,7 @@ async def upload_video(
         "updated_at": datetime.utcnow().isoformat(),
     }
     await cache.set_job(job_id, job_data)
+    await metadata_store.create_job(job_id, job_data)
 
     # Queue for async processing
     background_tasks.add_task(enqueue_processing, job_id, cache)
