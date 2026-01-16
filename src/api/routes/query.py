@@ -12,7 +12,7 @@ from src.core.logging import get_logger
 from src.core.models import FrameSource, JobStatus, QueryRequest, QueryResponse
 from src.ingest.extractor import FrameExtractor
 from src.ml.clip_scorer import CLIPScorer
-from src.ml.embeddings import top_k_similar
+from src.ml.embeddings import FaissEmbeddingIndex, top_k_similar
 from src.vlm.aggregator import BatchAggregator
 from src.vlm.client import VLMClient
 from src.vlm.prompt_builder import PromptBuilder
@@ -108,12 +108,30 @@ async def query_video(
     indices = [e["frame_index"] for e in embeddings]
     top_k = min(query.max_frames, len(indices))
 
-    ranked = top_k_similar(
-        query_embedding,
-        embedding_matrix,  # type: ignore[arg-type]
-        k=top_k,
-        indices=indices,
-    )
+    if settings.use_faiss:
+        try:
+            faiss_index = FaissEmbeddingIndex(dim=embedding_matrix.shape[1])
+            faiss_index.add_batch(
+                embedding_matrix,
+                metadata_list=[{"frame_index": idx} for idx in indices],
+                ids=indices,
+            )
+            ranked_raw = faiss_index.search(query_embedding, k=top_k)
+            ranked = [(item[0], item[1]) for item in ranked_raw]
+        except Exception:
+            ranked = top_k_similar(
+                query_embedding,
+                embedding_matrix,
+                k=top_k,
+                indices=indices,
+            )
+    else:
+        ranked = top_k_similar(
+            query_embedding,
+            embedding_matrix,
+            k=top_k,
+            indices=indices,
+        )
 
     # Build sources and ensure frame assets exist
     job_data = await metadata_store.get_job(job_id)

@@ -11,8 +11,14 @@ import numpy as np
 from numpy.typing import NDArray
 
 from src.core.logging import get_logger
+from src.core.config import settings
 
 logger = get_logger(__name__)
+
+try:
+    import faiss  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    faiss = None
 
 
 def compute_embedding_hash(embedding: NDArray[np.float32]) -> str:
@@ -258,3 +264,95 @@ class EmbeddingIndex:
         self._embeddings.clear()
         self._metadata.clear()
         self._matrix = None
+
+
+class FaissEmbeddingIndex:
+    """FAISS-backed embedding index for fast similarity search."""
+
+    def __init__(self, dim: int | None = None) -> None:
+        if faiss is None:
+            raise RuntimeError("faiss is not installed. Install faiss-cpu to use this index.")
+        self.dim = dim
+        self._index = None
+        self._metadata: list[dict[str, Any]] = []
+        self._ids: list[int] = []
+
+    def _ensure_index(self, dim: int) -> None:
+        if self._index is None:
+            # Use cosine similarity via inner product on normalized vectors
+            self._index = faiss.IndexFlatIP(dim)
+
+    def add(
+        self,
+        embedding: NDArray[np.float32],
+        metadata: dict[str, Any] | None = None,
+        idx: int | None = None,
+    ) -> int:
+        """Add an embedding to the FAISS index."""
+        if embedding.ndim != 1:
+            raise ValueError("Embedding must be a 1D vector")
+        dim = embedding.shape[0]
+        self._ensure_index(dim)
+        vector = embedding / (np.linalg.norm(embedding) + 1e-7)
+        self._index.add(vector.reshape(1, -1).astype(np.float32))
+
+        assigned_idx = idx if idx is not None else len(self._ids)
+        self._ids.append(assigned_idx)
+        self._metadata.append(metadata or {})
+        return assigned_idx
+
+    def add_batch(
+        self,
+        embeddings: NDArray[np.float32],
+        metadata_list: list[dict[str, Any]] | None = None,
+        ids: list[int] | None = None,
+    ) -> list[int]:
+        """Add multiple embeddings to the FAISS index."""
+        if embeddings.ndim != 2:
+            raise ValueError("Embeddings must be a 2D matrix")
+        dim = embeddings.shape[1]
+        self._ensure_index(dim)
+
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-7
+        vectors = embeddings / norms
+        self._index.add(vectors.astype(np.float32))
+
+        count = embeddings.shape[0]
+        if ids is None:
+            ids = list(range(len(self._ids), len(self._ids) + count))
+
+        if metadata_list is None:
+            metadata_list = [{} for _ in range(count)]
+
+        self._ids.extend(ids)
+        self._metadata.extend(metadata_list)
+        return ids
+
+    def search(
+        self,
+        query: NDArray[np.float32],
+        k: int = 10,
+    ) -> list[tuple[int, float, dict[str, Any]]]:
+        """Search for nearest embeddings."""
+        if self._index is None or len(self._ids) == 0:
+            return []
+
+        query_norm = query / (np.linalg.norm(query) + 1e-7)
+        scores, indices = self._index.search(query_norm.reshape(1, -1).astype(np.float32), k)
+        results: list[tuple[int, float, dict[str, Any]]] = []
+        for score, idx in zip(scores[0], indices[0]):
+            if idx == -1:
+                continue
+            emb_id = self._ids[idx]
+            metadata = self._metadata[idx]
+            results.append((emb_id, float(score), metadata))
+        return results
+
+    def __len__(self) -> int:
+        return len(self._ids)
+
+    def clear(self) -> None:
+        """Clear the index."""
+        self._index = None
+        self._metadata.clear()
+        self._ids.clear()
