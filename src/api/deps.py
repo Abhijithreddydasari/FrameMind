@@ -6,6 +6,7 @@ from fastapi import Depends, Request
 from src.cache.redis_cache import RedisCache
 from src.core.config import Settings, get_settings
 from src.core.logging import get_logger
+from src.storage.metadata import MetadataStore
 
 logger = get_logger(__name__)
 
@@ -52,3 +53,15 @@ async def require_ready(request: Request) -> None:
 
 
 ReadyDep = Annotated[None, Depends(require_ready)]
+
+
+# Metadata store dependency
+def get_metadata_store(request: Request) -> MetadataStore:
+    """Get metadata store instance."""
+    store = getattr(request.app.state, "metadata_store", None)
+    if store is None:
+        raise RuntimeError("Metadata store not initialized")
+    return store
+
+
+MetadataStoreDep = Annotated[MetadataStore, Depends(get_metadata_store)]

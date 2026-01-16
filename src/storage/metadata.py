@@ -1,15 +1,13 @@
 """Metadata storage using SQLAlchemy (SQLite/PostgreSQL)."""
 from datetime import datetime
-from typing import Any
+from typing import Any, Iterable
 from uuid import UUID
 
-from sqlalchemy import JSON, Column, DateTime, Enum, Float, Integer, String, Text
-from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, Text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from src.core.config import settings
-from src.core.models import JobStatus
 
 
 class Base(DeclarativeBase):
@@ -64,6 +62,21 @@ class QueryModel(Base):
     frames_analyzed: Mapped[int | None] = mapped_column(Integer, nullable=True)
     processing_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sources: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class FrameEmbeddingModel(Base):
+    """Frame embedding storage model."""
+
+    __tablename__ = "frame_embeddings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(String(36), index=True)
+    frame_index: Mapped[int] = mapped_column(Integer, index=True)
+    timestamp_ms: Mapped[int] = mapped_column(Integer)
+    embedding: Mapped[list[float]] = mapped_column(JSON)
+    is_selected: Mapped[bool] = mapped_column(Boolean, default=False)
+    frame_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -152,6 +165,66 @@ class MetadataStore:
                 sources=result.get("sources"),
             )
             session.add(query)
+            await session.commit()
+
+    async def save_embeddings(
+        self,
+        job_id: UUID,
+        embeddings: Iterable[dict[str, Any]],
+    ) -> None:
+        """Persist frame embeddings for a job."""
+        async with self.async_session() as session:
+            rows = [
+                FrameEmbeddingModel(
+                    job_id=str(job_id),
+                    frame_index=item["frame_index"],
+                    timestamp_ms=item.get("timestamp_ms", 0),
+                    embedding=item["embedding"],
+                    is_selected=item.get("is_selected", False),
+                    frame_path=item.get("frame_path"),
+                )
+                for item in embeddings
+            ]
+            session.add_all(rows)
+            await session.commit()
+
+    async def get_embeddings(self, job_id: UUID) -> list[dict[str, Any]]:
+        """Load embeddings for a job."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                FrameEmbeddingModel.__table__.select().where(
+                    FrameEmbeddingModel.job_id == str(job_id)
+                )
+            )
+            rows = result.fetchall()
+
+        return [
+            {
+                "frame_index": row.frame_index,
+                "timestamp_ms": row.timestamp_ms,
+                "embedding": row.embedding,
+                "is_selected": row.is_selected,
+                "frame_path": row.frame_path,
+            }
+            for row in rows
+        ]
+
+    async def update_frame_paths(
+        self,
+        job_id: UUID,
+        frame_paths: dict[int, str],
+    ) -> None:
+        """Update stored frame paths for selected frames."""
+        async with self.async_session() as session:
+            for frame_index, path in frame_paths.items():
+                await session.execute(
+                    FrameEmbeddingModel.__table__.update()
+                    .where(
+                        (FrameEmbeddingModel.job_id == str(job_id))
+                        & (FrameEmbeddingModel.frame_index == frame_index)
+                    )
+                    .values(frame_path=path, is_selected=True)
+                )
             await session.commit()
 
     async def close(self) -> None:

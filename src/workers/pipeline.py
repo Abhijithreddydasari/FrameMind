@@ -18,6 +18,8 @@ from arq.connections import RedisSettings
 from src.core.config import settings
 from src.core.logging import get_logger
 from src.core.models import JobStatus
+from src.ingest.extractor import FrameExtractor
+from src.storage.metadata import MetadataStore
 
 logger = get_logger(__name__)
 
@@ -61,6 +63,7 @@ async def process_video(
         Processing result with selected frames and metadata
     """
     redis: ArqRedis = ctx["redis"]
+    metadata_store: MetadataStore = ctx["metadata_store"]
     job_uuid = UUID(job_id)
 
     logger.info("Starting video processing", job_id=job_id)
@@ -72,6 +75,10 @@ async def process_video(
         # Step 1: Validate and preprocess
         await _update_job_status(redis, job_uuid, JobStatus.PROCESSING, progress=0.2)
         validated_path = await preprocess_video(ctx, job_id, video_path)
+        await metadata_store.update_job(
+            job_uuid,
+            {"video_path": validated_path, "status": JobStatus.PROCESSING.value},
+        )
 
         # Step 2: Extract and select frames
         await _update_job_status(redis, job_uuid, JobStatus.EXTRACTING, progress=0.4)
@@ -80,6 +87,15 @@ async def process_video(
         # Step 3: Cache embeddings
         await _update_job_status(redis, job_uuid, JobStatus.ANALYZING, progress=0.7)
         await cache_embeddings(ctx, job_id, selection_result)
+        await metadata_store.update_job(
+            job_uuid,
+            {
+                "status": JobStatus.COMPLETE.value,
+                "keyframe_count": len(selection_result.get("selected_indices", [])),
+                "scene_count": len(selection_result.get("scene_boundaries", [])),
+                "completed_at": datetime.utcnow(),
+            },
+        )
 
         # Mark complete
         await _update_job_status(redis, job_uuid, JobStatus.COMPLETE, progress=1.0)
@@ -148,6 +164,7 @@ async def preprocess_video(
 
     # Store metadata
     redis: ArqRedis = ctx["redis"]
+    metadata_store: MetadataStore = ctx["metadata_store"]
     await redis.hset(
         f"job:{job_id}:metadata",
         mapping={
@@ -156,6 +173,18 @@ async def preprocess_video(
             "height": str(height),
             "frame_count": str(frame_count),
             "duration_ms": str(int((frame_count / fps) * 1000)) if fps > 0 else "0",
+        },
+    )
+
+    # Persist metadata to database
+    await metadata_store.update_job(
+        UUID(job_id),
+        {
+            "fps": fps,
+            "width": width,
+            "height": height,
+            "frame_count": frame_count,
+            "duration_ms": int((frame_count / fps) * 1000) if fps > 0 else 0,
         },
     )
 
@@ -184,7 +213,7 @@ async def extract_and_select_frames(
     try:
         result = await selector.select_from_video(video_path)
 
-        return {
+        selection_payload = {
             "selected_indices": result.selected_indices,
             "scene_boundaries": [
                 {"frame_index": b.frame_index, "confidence": b.confidence}
@@ -196,10 +225,14 @@ async def extract_and_select_frames(
                     "frame_index": e.frame_index,
                     "embedding": e.embedding.tolist(),
                     "timestamp_ms": e.timestamp_ms,
+                    "is_selected": e.frame_index in result.selected_indices,
                 }
                 for e in result.embeddings
             ],
         }
+        await _persist_frame_data(ctx, job_id, video_path, selection_payload)
+
+        return selection_payload
 
     finally:
         await selector.cleanup()
@@ -231,6 +264,44 @@ async def cache_embeddings(
         job_id=job_id,
         count=len(selected_indices),
     )
+
+
+async def _persist_frame_data(
+    ctx: dict[str, Any],
+    job_id: str,
+    video_path: str,
+    selection_result: dict[str, Any],
+) -> None:
+    """Persist embeddings and selected frame assets."""
+    metadata_store: MetadataStore = ctx["metadata_store"]
+    embeddings = selection_result.get("embeddings", [])
+    selected_indices = set(selection_result.get("selected_indices", []))
+
+    # Persist embeddings to database
+    await metadata_store.save_embeddings(UUID(job_id), embeddings)
+
+    # Extract and store selected frames
+    selected_timestamps = [
+        emb["timestamp_ms"]
+        for emb in embeddings
+        if emb["frame_index"] in selected_indices
+    ]
+
+    if not selected_timestamps:
+        return
+
+    extractor = FrameExtractor()
+    extracted = extractor.extract_at_timestamps(video_path, selected_timestamps)
+
+    output_dir = settings.storage_path / "frames" / job_id
+    saved_paths = extractor.save_frames(extracted, output_dir)
+
+    # Map frame_index to saved path
+    frame_paths: dict[int, str] = {}
+    for frame_data, path in zip(extracted, saved_paths):
+        frame_paths[frame_data.index] = str(path)
+
+    await metadata_store.update_frame_paths(UUID(job_id), frame_paths)
 
 
 async def query_video(
@@ -323,6 +394,11 @@ async def startup(ctx: dict[str, Any]) -> None:
     """Worker startup hook."""
     logger.info("Worker starting up")
 
+    # Initialize metadata store
+    metadata_store = MetadataStore()
+    await metadata_store.initialize()
+    ctx["metadata_store"] = metadata_store
+
     # Pre-load ML models if configured
     if not settings.is_production:
         logger.info("Development mode: ML models will be loaded on demand")
@@ -331,6 +407,9 @@ async def startup(ctx: dict[str, Any]) -> None:
 async def shutdown(ctx: dict[str, Any]) -> None:
     """Worker shutdown hook."""
     logger.info("Worker shutting down")
+    metadata_store: MetadataStore | None = ctx.get("metadata_store")
+    if metadata_store:
+        await metadata_store.close()
 
 
 class WorkerSettings:

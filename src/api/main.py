@@ -13,6 +13,7 @@ from src.api.routes import health, ingest, query
 from src.core.config import settings
 from src.core.exceptions import FrameMindError, RateLimitExceededError
 from src.core.logging import get_logger, setup_logging
+from src.storage.metadata import MetadataStore
 
 logger = get_logger(__name__)
 
@@ -32,8 +33,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if not settings.is_production:
         logger.info("Development mode: ML models will be loaded on first use")
 
+    # Initialize metadata store
+    metadata_store = MetadataStore()
+    await metadata_store.initialize()
+
     # Store shared state in app.state
     app.state.ready = True
+    app.state.metadata_store = metadata_store
 
     yield
 
@@ -42,6 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.ready = False
 
     # Cleanup tasks
+    await metadata_store.close()
     await asyncio.sleep(0.1)  # Allow pending requests to complete
 
 
