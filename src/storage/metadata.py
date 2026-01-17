@@ -80,6 +80,22 @@ class FrameEmbeddingModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class TemporalEmbeddingModel(Base):
+    """Temporal (clip) embedding database model."""
+
+    __tablename__ = "temporal_embeddings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(String(36), index=True)
+    clip_index: Mapped[int] = mapped_column(Integer)
+    start_frame: Mapped[int] = mapped_column(Integer)
+    end_frame: Mapped[int] = mapped_column(Integer)
+    start_ms: Mapped[int] = mapped_column(Integer)
+    end_ms: Mapped[int] = mapped_column(Integer)
+    embedding_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class MetadataStore:
     """Async metadata storage using SQLAlchemy.
     
@@ -226,6 +242,58 @@ class MetadataStore:
                     .values(frame_path=path, is_selected=True)
                 )
             await session.commit()
+
+    async def save_temporal_embeddings(
+        self,
+        job_id: UUID,
+        embeddings: list[dict[str, Any]],
+    ) -> None:
+        """Save temporal (clip) embeddings for a job.
+        
+        Args:
+            job_id: Job identifier
+            embeddings: List of embedding dicts with clip_index, start/end frames, etc.
+        """
+        async with self.async_session() as session:
+            for emb in embeddings:
+                temp_emb = TemporalEmbeddingModel(
+                    job_id=str(job_id),
+                    clip_index=emb["clip_index"],
+                    start_frame=emb["start_frame"],
+                    end_frame=emb["end_frame"],
+                    start_ms=emb.get("start_ms", 0),
+                    end_ms=emb.get("end_ms", 0),
+                    embedding_path=emb.get("embedding_path"),
+                )
+                session.add(temp_emb)
+            await session.commit()
+
+    async def get_temporal_embeddings(
+        self,
+        job_id: UUID,
+    ) -> list[dict[str, Any]]:
+        """Get all temporal embeddings for a job."""
+        from sqlalchemy import select
+
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(TemporalEmbeddingModel)
+                .where(TemporalEmbeddingModel.job_id == str(job_id))
+                .order_by(TemporalEmbeddingModel.clip_index)
+            )
+            rows = result.scalars().all()
+
+            return [
+                {
+                    "clip_index": row.clip_index,
+                    "start_frame": row.start_frame,
+                    "end_frame": row.end_frame,
+                    "start_ms": row.start_ms,
+                    "end_ms": row.end_ms,
+                    "embedding_path": row.embedding_path,
+                }
+                for row in rows
+            ]
 
     async def close(self) -> None:
         """Close database connection."""

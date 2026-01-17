@@ -3,15 +3,19 @@
 Defines async tasks for each stage of the video processing pipeline:
 1. Preprocessing - validate and normalize video
 2. Frame extraction - extract frames at configured FPS
-3. Frame selection - ML-based intelligent selection
+3. Frame selection - ML-based intelligent selection (spatial + temporal)
 4. VLM analysis - send selected frames to VLM
 5. Aggregation - combine results
+
+Supports parallel two-stream extraction (CLIP + X-CLIP).
 """
+import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+import numpy as np
 from arq import ArqRedis, cron
 from arq.connections import RedisSettings
 
@@ -80,13 +84,33 @@ async def process_video(
             {"video_path": validated_path, "status": JobStatus.PROCESSING.value},
         )
 
-        # Step 2: Extract and select frames
-        await _update_job_status(redis, job_uuid, JobStatus.EXTRACTING, progress=0.4)
-        selection_result = await extract_and_select_frames(ctx, job_id, validated_path)
+        # Step 2: Parallel extraction (spatial + temporal)
+        await _update_job_status(redis, job_uuid, JobStatus.EXTRACTING, progress=0.3)
+        
+        # Run both streams concurrently
+        spatial_task = extract_and_select_frames(ctx, job_id, validated_path)
+        
+        if settings.use_temporal:
+            temporal_task = extract_temporal_clips(ctx, job_id, validated_path)
+            spatial_result, temporal_result = await asyncio.gather(
+                spatial_task, temporal_task, return_exceptions=True
+            )
+        else:
+            spatial_result = await spatial_task
+            temporal_result = None
+
+        # Handle exceptions
+        if isinstance(spatial_result, Exception):
+            raise spatial_result
+        
+        if isinstance(temporal_result, Exception):
+            logger.warning("Temporal extraction failed, continuing with spatial only", 
+                          error=str(temporal_result))
+            temporal_result = None
 
         # Step 3: Cache embeddings
         await _update_job_status(redis, job_uuid, JobStatus.ANALYZING, progress=0.7)
-        await cache_embeddings(ctx, job_id, selection_result)
+        await cache_embeddings(ctx, job_id, spatial_result, temporal_result)
         await metadata_store.update_job(
             job_uuid,
             {
@@ -100,16 +124,21 @@ async def process_video(
         # Mark complete
         await _update_job_status(redis, job_uuid, JobStatus.COMPLETE, progress=1.0)
 
+        frames_selected = len(spatial_result.get("selected_indices", []))
+        clips_extracted = len(temporal_result.get("clip_embeddings", [])) if temporal_result else 0
+
         logger.info(
             "Video processing complete",
             job_id=job_id,
-            frames_selected=len(selection_result.get("selected_indices", [])),
+            frames_selected=frames_selected,
+            clips_extracted=clips_extracted,
         )
 
         return {
             "status": "complete",
-            "frames_selected": len(selection_result.get("selected_indices", [])),
-            "scene_boundaries": len(selection_result.get("scene_boundaries", [])),
+            "frames_selected": frames_selected,
+            "clips_extracted": clips_extracted,
+            "scene_boundaries": len(spatial_result.get("scene_boundaries", [])),
         }
 
     except Exception as e:
@@ -238,31 +267,130 @@ async def extract_and_select_frames(
         await selector.cleanup()
 
 
+async def extract_temporal_clips(
+    ctx: dict[str, Any],
+    job_id: str,
+    video_path: str,
+) -> dict[str, Any]:
+    """Extract temporal clips and compute X-CLIP embeddings.
+    
+    Uses sliding window extraction and batched GPU encoding.
+    
+    Returns:
+        Dict with clip_embeddings and clip metadata
+    """
+    logger.info("Extracting temporal clips", job_id=job_id)
+
+    from src.ml.temporal_encoder import XCLIPEncoder, ClipConfig
+
+    config = ClipConfig(
+        window_frames=settings.temporal_window_frames,
+        clip_fps=settings.temporal_fps,
+        stride=settings.temporal_stride,
+    )
+
+    encoder = XCLIPEncoder()
+
+    try:
+        clip_embeddings = await encoder.extract_and_encode(video_path, config)
+
+        logger.info(
+            "Temporal clips extracted",
+            job_id=job_id,
+            clip_count=len(clip_embeddings),
+        )
+
+        return {
+            "clip_embeddings": [
+                {
+                    "clip_index": ce.clip_index,
+                    "embedding": ce.embedding.tolist(),
+                    "start_frame": ce.start_frame,
+                    "end_frame": ce.end_frame,
+                    "start_ms": ce.start_ms,
+                    "end_ms": ce.end_ms,
+                }
+                for ce in clip_embeddings
+            ],
+        }
+
+    finally:
+        await encoder.unload_model()
+
+
 async def cache_embeddings(
     ctx: dict[str, Any],
     job_id: str,
-    selection_result: dict[str, Any],
+    spatial_result: dict[str, Any],
+    temporal_result: dict[str, Any] | None = None,
 ) -> None:
-    """Cache frame embeddings in Redis for fast query retrieval."""
+    """Cache spatial and temporal embeddings."""
     redis: ArqRedis = ctx["redis"]
+    metadata_store: MetadataStore = ctx["metadata_store"]
+    job_uuid = UUID(job_id)
 
-    embeddings = selection_result.get("embeddings", [])
-    selected_indices = set(selection_result.get("selected_indices", []))
+    # Save spatial embeddings
+    embeddings = spatial_result.get("embeddings", [])
+    selected_indices = set(spatial_result.get("selected_indices", []))
 
-    # Cache only selected frame embeddings
+    spatial_count = 0
     for emb in embeddings:
         if emb["frame_index"] in selected_indices:
-            key = f"job:{job_id}:embedding:{emb['frame_index']}"
+            key = f"job:{job_id}:spatial:{emb['frame_index']}"
             await redis.set(
                 key,
                 str(emb["embedding"]),
                 ex=86400 * 7,  # 7 days TTL
             )
+            spatial_count += 1
+
+    # Save to database
+    frame_embs = [
+        {
+            "frame_index": emb["frame_index"],
+            "timestamp_ms": emb.get("timestamp_ms", 0),
+            "embedding": emb.get("embedding", []),
+            "is_selected": emb["frame_index"] in selected_indices,
+            "frame_path": emb.get("frame_path"),
+        }
+        for emb in embeddings
+        if emb["frame_index"] in selected_indices
+    ]
+    await metadata_store.save_embeddings(job_uuid, frame_embs)
+
+    # Save temporal embeddings if available
+    temporal_count = 0
+    if temporal_result:
+        clip_embs = temporal_result.get("clip_embeddings", [])
+        
+        for ce in clip_embs:
+            key = f"job:{job_id}:temporal:{ce['clip_index']}"
+            await redis.set(
+                key,
+                str(ce["embedding"]),
+                ex=86400 * 7,
+            )
+            temporal_count += 1
+
+        # Save to DB
+        temp_emb_data = [
+            {
+                "clip_index": ce["clip_index"],
+                "start_frame": ce["start_frame"],
+                "end_frame": ce["end_frame"],
+                "start_ms": ce["start_ms"],
+                "end_ms": ce["end_ms"],
+                "embedding_path": f"job:{job_id}:temporal:{ce['clip_index']}",
+            }
+            for ce in clip_embs
+        ]
+        await metadata_store.save_temporal_embeddings(job_uuid, temp_emb_data)
 
     logger.info(
         "Embeddings cached",
         job_id=job_id,
-        count=len(selected_indices),
+        spatial_count=spatial_count,
+        temporal_count=temporal_count,
     )
 
 
@@ -419,6 +547,7 @@ class WorkerSettings:
         process_video,
         preprocess_video,
         extract_and_select_frames,
+        extract_temporal_clips,
         cache_embeddings,
         query_video,
     ]

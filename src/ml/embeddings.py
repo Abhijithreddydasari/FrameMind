@@ -356,3 +356,135 @@ class FaissEmbeddingIndex:
         self._index = None
         self._metadata.clear()
         self._ids.clear()
+
+
+class DualStreamIndex:
+    """Dual-stream index for spatial + temporal embeddings.
+    
+    Manages separate FAISS indexes for spatial (CLIP) and temporal (X-CLIP)
+    embeddings, with fused search capability.
+    
+    Example:
+        index = DualStreamIndex()
+        
+        # Add embeddings
+        index.add_spatial(frame_embedding, {"frame_index": 0})
+        index.add_temporal(clip_embedding, {"clip_index": 0})
+        
+        # Search with fusion
+        results = index.search_fused(query_embedding, k=10, alpha=0.5)
+    """
+
+    def __init__(
+        self,
+        spatial_dim: int = 512,
+        temporal_dim: int = 512,
+        use_gpu: bool = False,
+    ) -> None:
+        self.spatial_index = FaissEmbeddingIndex(spatial_dim)
+        self.temporal_index = FaissEmbeddingIndex(temporal_dim)
+
+    def add_spatial(
+        self,
+        embedding: NDArray[np.float32],
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        """Add a spatial (frame) embedding."""
+        return self.spatial_index.add(embedding, metadata)
+
+    def add_spatial_batch(
+        self,
+        embeddings: list[NDArray[np.float32]],
+        metadata_list: list[dict[str, Any]] | None = None,
+    ) -> list[int]:
+        """Add multiple spatial embeddings."""
+        matrix = np.stack(embeddings).astype(np.float32)
+        return self.spatial_index.add_batch(matrix, metadata_list)
+
+    def add_temporal(
+        self,
+        embedding: NDArray[np.float32],
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        """Add a temporal (clip) embedding."""
+        return self.temporal_index.add(embedding, metadata)
+
+    def add_temporal_batch(
+        self,
+        embeddings: list[NDArray[np.float32]],
+        metadata_list: list[dict[str, Any]] | None = None,
+    ) -> list[int]:
+        """Add multiple temporal embeddings."""
+        matrix = np.stack(embeddings).astype(np.float32)
+        return self.temporal_index.add_batch(matrix, metadata_list)
+
+    def search_spatial(
+        self,
+        query: NDArray[np.float32],
+        k: int = 10,
+    ) -> list[tuple[int, float, dict[str, Any]]]:
+        """Search spatial index only."""
+        return self.spatial_index.search(query, k)
+
+    def search_temporal(
+        self,
+        query: NDArray[np.float32],
+        k: int = 10,
+    ) -> list[tuple[int, float, dict[str, Any]]]:
+        """Search temporal index only."""
+        return self.temporal_index.search(query, k)
+
+    def search_fused(
+        self,
+        spatial_query: NDArray[np.float32],
+        temporal_query: NDArray[np.float32] | None = None,
+        k: int = 10,
+        alpha: float = 0.5,
+    ) -> list[tuple[str, int, float, dict[str, Any]]]:
+        """Search both indexes and fuse results.
+        
+        Args:
+            spatial_query: Query embedding for spatial search
+            temporal_query: Query embedding for temporal search (optional)
+            k: Number of results per stream
+            alpha: Fusion weight (0=temporal only, 1=spatial only, 0.5=equal)
+            
+        Returns:
+            List of (stream, index, fused_score, metadata) tuples
+        """
+        results: list[tuple[str, int, float, dict[str, Any]]] = []
+
+        # Search spatial
+        if len(self.spatial_index) > 0:
+            spatial_results = self.spatial_index.search(spatial_query, k)
+            for idx, score, meta in spatial_results:
+                fused_score = score * alpha
+                results.append(("spatial", idx, fused_score, meta))
+
+        # Search temporal
+        if temporal_query is not None and len(self.temporal_index) > 0:
+            temporal_results = self.temporal_index.search(temporal_query, k)
+            for idx, score, meta in temporal_results:
+                fused_score = score * (1 - alpha)
+                results.append(("temporal", idx, fused_score, meta))
+
+        # Sort by fused score
+        results.sort(key=lambda x: x[2], reverse=True)
+
+        return results[:k * 2]  # Return more results for diversity
+
+    def __len__(self) -> int:
+        return len(self.spatial_index) + len(self.temporal_index)
+
+    @property
+    def spatial_count(self) -> int:
+        return len(self.spatial_index)
+
+    @property
+    def temporal_count(self) -> int:
+        return len(self.temporal_index)
+
+    def clear(self) -> None:
+        """Clear both indexes."""
+        self.spatial_index.clear()
+        self.temporal_index.clear()

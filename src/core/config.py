@@ -53,17 +53,33 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite+aiosqlite:///./data/framemind.db"
 
-    # ML
+    # ML - Spatial (CLIP)
     clip_model: str = "openai/clip-vit-base-patch32"
     clip_device: Literal["cpu", "cuda", "mps"] = "cpu"
     frame_extraction_fps: float = 2.0
     max_frames_per_video: int = 1000
     target_keyframes: int = 30
-    use_faiss: bool = True
+    spatial_batch_size: int = 32
+
+    # ML - Temporal (X-CLIP)
+    xclip_model: str = "microsoft/xclip-base-patch32"
+    temporal_window_frames: int = 16  # Frames per clip
+    temporal_fps: float = 8.0  # FPS for clip extraction
+    temporal_stride: float = 0.5  # Overlap ratio (0.5 = 50%)
+    temporal_batch_size: int = 8  # 0 = auto
+    use_temporal: bool = True  # Enable temporal stream
+
+    # GPU Parallelization
+    multi_gpu: bool = True  # Use all available GPUs
+    prefetch_batches: int = 2  # Batches to prefetch
+    fusion_alpha: float = 0.5  # Spatial vs temporal weight (0.5 = equal)
 
     # Shot detection
     shot_threshold: float = 0.3
     min_scene_length: int = 10  # minimum frames between scene changes
+
+    # FAISS
+    use_faiss: bool = True  # Use FAISS for vector search
 
     # VLM
     vlm_provider: Literal["openai", "anthropic"] = "openai"
