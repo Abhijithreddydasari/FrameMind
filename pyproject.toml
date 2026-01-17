@@ -49,6 +49,9 @@ dependencies = [
     "scikit-learn>=1.4.0,<2.0.0",
     "faiss-cpu>=1.8.0,<2.0.0",
     
+    # Vector search
+    "faiss-cpu>=1.7.0,<2.0.0",
+    
     # Video processing
     "ffmpeg-python>=0.2.0,<1.0.0",
     
@@ -76,6 +79,16 @@ s3 = [
 postgres = [
     "asyncpg>=0.29.0,<1.0.0",
     "alembic>=1.13.0,<2.0.0",
+]
+
+# Fast video decoding (optional, recommended for production)
+video = [
+    "decord>=0.6.0,<1.0.0",
+]
+
+# GPU-accelerated FAISS (optional)
+gpu = [
+    "faiss-gpu>=1.7.0,<2.0.0",
 ]
 
 [project.scripts]
