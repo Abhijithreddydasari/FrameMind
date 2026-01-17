@@ -39,6 +39,7 @@ FrameMind ingests videos, performs intelligent frame selection using computer vi
 - Python 3.11+
 - Docker & Docker Compose
 - FFmpeg (for local development)
+- Redis 8.0 (for async pipeline and rate limiting)
 
 ### Option 1: Docker (Recommended)
 
@@ -70,7 +71,7 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 make dev
 
 # Start Redis (required)
-docker run -d -p 6379:6379 redis:7-alpine
+docker run -d -p 6379:6379 redis:8.0-alpine
 
 # Initialize data directories
 make init
