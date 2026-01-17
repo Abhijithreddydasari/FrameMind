@@ -24,7 +24,7 @@ from src.storage.metadata import MetadataStore
 logger = get_logger(__name__)
 
 
-async def get_redis_settings() -> RedisSettings:
+def get_redis_settings() -> RedisSettings:
     """Get Redis settings for ARQ."""
     # Parse Redis URL
     url = settings.redis_url_str
@@ -437,6 +437,4 @@ class WorkerSettings:
     max_tries = 3
     retry_defer = timedelta(seconds=30)
 
-    @staticmethod
-    async def redis_settings() -> RedisSettings:
-        return await get_redis_settings()
+    redis_settings = get_redis_settings()

@@ -12,6 +12,7 @@ from src.api.deps import MetadataStoreDep, RedisCacheDep, SettingsDep
 from src.core.exceptions import UnsupportedFormatError, VideoTooLargeError
 from src.core.logging import get_logger
 from src.core.models import JobStatus, VideoUploadResponse
+from src.workers.pipeline import get_redis_settings
 
 logger = get_logger(__name__)
 
@@ -99,7 +100,7 @@ async def upload_video(
     await metadata_store.create_job(job_id, job_data)
 
     # Queue for async processing
-    background_tasks.add_task(enqueue_processing, job_id, cache)
+    background_tasks.add_task(enqueue_processing, job_id, str(video_path))
 
     logger.info("Video uploaded", job_id=str(job_id), filename=file.filename)
 
@@ -111,16 +112,17 @@ async def upload_video(
     )
 
 
-async def enqueue_processing(job_id: UUID, cache: RedisCacheDep) -> None:
+async def enqueue_processing(job_id: UUID, video_path: str) -> None:
     """Enqueue video for async processing via ARQ."""
     try:
-        # In production, this would enqueue to ARQ
-        # For now, update status to show it's queued
-        await cache.update_job_status(job_id, JobStatus.PROCESSING)
-        logger.info("Job enqueued for processing", job_id=str(job_id))
+        from arq.connections import create_pool
+
+        redis = await create_pool(get_redis_settings())
+        await redis.enqueue_job("process_video", str(job_id), video_path)
+        await redis.close()
+        logger.info("Job enqueued for processing", job_id=str(job_id), video_path=video_path)
     except Exception as e:
         logger.error("Failed to enqueue job", job_id=str(job_id), error=str(e))
-        await cache.update_job_status(job_id, JobStatus.FAILED, error=str(e))
 
 
 @router.get("/status/{job_id}", response_model=IngestStatusResponse)
