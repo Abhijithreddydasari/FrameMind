@@ -97,7 +97,7 @@ flowchart LR
 
 ```bash
 # Clone and enter directory
-git clone https://github.com/abhijithreddydasariframemind.git
+git clone https://github.com/Abhijithreddydasari/FrameMind.git
 cd framemind
 
 # Copy environment file
