@@ -6,7 +6,9 @@ FrameMind ingests videos, performs intelligent frame selection using computer vi
 
 ## Features
 
-- **Intelligent Frame Selection**: CLIP embeddings + shot detection reduce thousands of frames to 10-20 key frames
+- **Dual-Stream Retrieval**: Spatial CLIP + temporal X-CLIP for better video understanding
+- **Temporal Understanding**: Clip-level embeddings capture motion and actions
+- **Intelligent Frame Selection**: CLIP embeddings + shot detection reduce thousands of frames to key frames
 - **Async Processing Pipeline**: Upload → Preprocess → Extract → Analyze → Complete
 - **VLM Integration**: Query videos using natural language with GPT-4V or Claude
 - **Local-First Architecture**: Run entirely on your machine with Docker
@@ -14,22 +16,72 @@ FrameMind ingests videos, performs intelligent frame selection using computer vi
 
 ## Architecture
 
+```mermaid
+flowchart TB
+  subgraph api [API Layer]
+    client[Client] --> fastapi[FastAPI]
+  end
+
+  subgraph infra [Infra]
+    redis[Redis]
+    sqlite[SQLite]
+    storage[LocalStorage]
+  end
+
+  subgraph workers [Async Workers]
+    pipeline[ARQ Pipeline]
+  end
+
+  subgraph ml [ML/CV Core]
+    clip[CLIP Spatial]
+    xclip[X-CLIP Temporal]
+    shot[ShotDetection]
+    faiss[FAISS Indexes]
+  end
+
+  fastapi --> redis
+  fastapi --> sqlite
+  redis --> pipeline
+  pipeline --> storage
+  pipeline --> clip
+  pipeline --> xclip
+  pipeline --> shot
+  clip --> faiss
+  xclip --> faiss
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Client    │────▶│   FastAPI   │────▶│    Redis    │
-└─────────────┘     └─────────────┘     └─────────────┘
-                           │                   │
-                           ▼                   ▼
-                    ┌─────────────┐     ┌─────────────┐
-                    │   Storage   │     │  ARQ Worker │
-                    └─────────────┘     └─────────────┘
-                                               │
-                           ┌───────────────────┼───────────────────┐
-                           ▼                   ▼                   ▼
-                    ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-                    │    CLIP     │     │    Shot     │     │     VLM     │
-                    │   Scorer    │     │  Detector   │     │   Client    │
-                    └─────────────┘     └─────────────┘     └─────────────┘
+
+## Processing Workflow
+
+```mermaid
+flowchart LR
+  upload[Upload] --> preprocess[Preprocess]
+  preprocess --> extractFrames[ExtractFrames]
+  preprocess --> extractClips[ExtractClips]
+
+  extractFrames --> clipEmbed[CLIP Embeddings]
+  extractClips --> xclipEmbed[X-CLIP Embeddings]
+  extractFrames --> shotDetect[Shot Detection]
+
+  clipEmbed --> storeSpatial[Store Spatial Embeddings]
+  xclipEmbed --> storeTemporal[Store Temporal Embeddings]
+  shotDetect --> keyframes[Keyframe Selection]
+  keyframes --> storeFrames[Store Frames]
+```
+
+## Query Workflow
+
+```mermaid
+flowchart LR
+  query[Query Text] --> clipText[CLIP Text Encoder]
+  query --> xclipText[X-CLIP Text Encoder]
+
+  clipText --> spatialSearch[Spatial Search]
+  xclipText --> temporalSearch[Temporal Search]
+  spatialSearch --> fuse[Fuse Scores]
+  temporalSearch --> fuse
+  fuse --> topK[Top-K Frames/Clips]
+  topK --> vlm[VLM Optional]
+  vlm --> answer[Answer]
 ```
 
 ## Quick Start
@@ -136,8 +188,10 @@ framemind/
 │   ├── ml/                     # Core ML (non-trivial)
 │   │   ├── shot_detector.py    # Histogram scene detection
 │   │   ├── clip_scorer.py      # CLIP embeddings + scoring
+│   │   ├── temporal_encoder.py # X-CLIP temporal encoder
+│   │   ├── parallel_encoder.py # GPU parallelization utils
 │   │   ├── frame_selector.py   # Intelligent selection
-│   │   └── embeddings.py       # Vector ops + index
+│   │   └── embeddings.py       # Vector ops + dual index
 │   ├── vlm/                    # VLM integration
 │   │   ├── client.py           # OpenAI + Anthropic clients
 │   │   ├── prompt_builder.py   # Context-aware prompts
@@ -168,10 +222,16 @@ Key environment variables:
 |----------|---------|-------------|
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis connection |
 | `CLIP_MODEL` | `openai/clip-vit-base-patch32` | CLIP model |
+| `XCLIP_MODEL` | `microsoft/xclip-base-patch32` | X-CLIP temporal model |
 | `CLIP_DEVICE` | `cpu` | Device for ML (`cpu`, `cuda`, `mps`) |
 | `VLM_PROVIDER` | `openai` | VLM provider |
 | `VLM_API_KEY` | - | API key for VLM |
 | `TARGET_KEYFRAMES` | `30` | Target frames per video |
+| `TEMPORAL_WINDOW_FRAMES` | `16` | Frames per temporal clip |
+| `TEMPORAL_FPS` | `8.0` | FPS used for clip extraction |
+| `TEMPORAL_STRIDE` | `0.5` | Overlap ratio for clips |
+| `TEMPORAL_BATCH_SIZE` | `8` | Batch size for X-CLIP |
+| `FUSION_ALPHA` | `0.5` | Spatial vs temporal weighting |
 | `RATE_LIMIT_REQUESTS` | `100` | Requests per window |
 
 See `.env.example` for all options.
@@ -193,6 +253,19 @@ boundaries = detector.detect_from_video("video.mp4")
 ### CLIP Scoring
 
 Computes semantic embeddings for frames:
+### X-CLIP Temporal Embeddings
+
+Computes clip-level temporal embeddings to capture motion:
+
+```python
+from src.ml.temporal_encoder import XCLIPEncoder, ClipConfig
+
+encoder = XCLIPEncoder()
+await encoder.load_model()
+
+config = ClipConfig(window_frames=16, clip_fps=8.0, stride=0.5)
+embeddings = await encoder.extract_and_encode("video.mp4", config)
+```
 
 ```python
 from src.ml import CLIPScorer
