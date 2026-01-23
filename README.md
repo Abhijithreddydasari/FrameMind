@@ -322,3 +322,4 @@ make typecheck
 - [ ] Batch video processing
 - [ ] Audio transcription integration
 - [ ] FAISS for large-scale embeddings
+- [ ] Novel Vision processing architectures
