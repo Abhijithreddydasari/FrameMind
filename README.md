@@ -4,6 +4,8 @@
 
 FrameMind ingests videos, performs intelligent frame selection using computer vision and machine learning, and answers semantic queries using Vision-Language Models (GPT-4V, Claude).
 
+**Note:** Version 2 for this repo coming soon with even more efficient processing. *Hint:* Will be implementing the [AutoGaze paper](https://autogaze.github.io/) for more efficient token management while keeping visual information conserved as much as possible.
+
 ## Features
 
 - **Dual-Stream Retrieval**: Spatial CLIP + temporal X-CLIP for better video understanding
