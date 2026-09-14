@@ -1,0 +1,18 @@
+# Experimental service: build and run separately from the local CPU stack.
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 HF_HOME=/models
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv python3-dev git build-essential libgl1 libglib2.0-0 && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
+WORKDIR /app
+COPY docker/requirements-gpu.lock ./
+RUN pip install --no-cache-dir -r requirements-gpu.lock
+ARG AUTOGAZE_COMMIT
+RUN test -n "$AUTOGAZE_COMMIT" && git clone https://github.com/NVlabs/AutoGaze.git /opt/autogaze && cd /opt/autogaze && git checkout "$AUTOGAZE_COMMIT" && pip install --no-deps .
+# Build the attention extension against the pinned CUDA/PyTorch environment.
+RUN pip install --no-build-isolation flash-attn==2.7.4.post1
+COPY src/ ./src/
+RUN useradd --create-home --uid 10001 framemind && mkdir /models && chown framemind /models
+USER framemind
+EXPOSE 8080
+CMD ["uvicorn", "src.gpu.app:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]

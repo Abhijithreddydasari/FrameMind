@@ -1,4 +1,5 @@
 """Context-aware prompt construction for VLM queries."""
+
 from dataclasses import dataclass
 
 from src.core.models import Frame
@@ -16,10 +17,10 @@ class PromptContext:
 
 class PromptBuilder:
     """Builds context-aware prompts for VLM queries.
-    
+
     Constructs prompts that provide temporal context and
     guide the VLM to produce structured responses.
-    
+
     Example:
         builder = PromptBuilder()
         prompt = builder.build_analysis_prompt(
@@ -29,7 +30,7 @@ class PromptBuilder:
     """
 
     def __init__(self) -> None:
-        self.system_context = """You are an expert video analyst. You will be shown key frames from a video 
+        self.system_context = """You are an expert video analyst. You will be shown key frames from a video
 and asked to answer questions about the video content.
 
 Guidelines:
@@ -46,12 +47,12 @@ Guidelines:
         include_timestamps: bool = True,
     ) -> str:
         """Build prompt for video analysis.
-        
+
         Args:
             query: User's question about the video
             frames: Selected frames with metadata
             include_timestamps: Whether to include temporal context
-            
+
         Returns:
             Formatted prompt string
         """
@@ -63,7 +64,7 @@ Guidelines:
             for i, frame in enumerate(frames):
                 timestamp = self._format_timestamp(frame.timestamp_ms)
                 frame_type = frame.frame_type.value
-                parts.append(f"  Frame {i+1}: {timestamp} ({frame_type})")
+                parts.append(f"  Frame {i + 1}: {timestamp} ({frame_type})")
             parts.append("")
 
         # Add the query
@@ -79,11 +80,11 @@ Guidelines:
         video_duration_ms: int | None = None,
     ) -> str:
         """Build prompt for video summarization.
-        
+
         Args:
             frames: Selected frames with metadata
             video_duration_ms: Total video duration
-            
+
         Returns:
             Formatted prompt string
         """
@@ -106,16 +107,18 @@ Guidelines:
             parts.append("Timeline:")
             for i, frame in enumerate(frames):
                 timestamp = self._format_timestamp(frame.timestamp_ms)
-                parts.append(f"  {timestamp} - Frame {i+1}")
+                parts.append(f"  {timestamp} - Frame {i + 1}")
 
-        parts.extend([
-            "",
-            "Please provide:",
-            "1. A brief overview of the video content",
-            "2. Key events or moments in chronological order",
-            "3. Notable objects, people, or activities",
-            "4. The overall theme or purpose of the video",
-        ])
+        parts.extend(
+            [
+                "",
+                "Please provide:",
+                "1. A brief overview of the video content",
+                "2. Key events or moments in chronological order",
+                "3. Notable objects, people, or activities",
+                "4. The overall theme or purpose of the video",
+            ]
+        )
 
         return "\n".join(parts)
 
@@ -125,11 +128,11 @@ Guidelines:
         frame_groups: list[list[Frame]],
     ) -> str:
         """Build prompt for comparing different parts of the video.
-        
+
         Args:
             query: Comparison question
             frame_groups: Groups of frames to compare
-            
+
         Returns:
             Formatted prompt string
         """

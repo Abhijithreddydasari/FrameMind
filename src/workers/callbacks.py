@@ -3,8 +3,10 @@
 Provides mechanisms for notifying external systems when
 jobs complete or fail.
 """
+
+from collections.abc import Callable, Coroutine
 from datetime import datetime
-from typing import Any, Callable, Coroutine
+from typing import Any
 from uuid import UUID
 
 import httpx
@@ -20,7 +22,7 @@ CallbackFn = Callable[[UUID, dict[str, Any]], Coroutine[Any, Any, None]]
 
 class CallbackRegistry:
     """Registry for job completion callbacks.
-    
+
     Allows registering handlers that are called when jobs
     reach terminal states (complete, failed, cancelled).
     """
@@ -54,7 +56,7 @@ class CallbackRegistry:
         data: dict[str, Any],
     ) -> None:
         """Trigger all callbacks for an event.
-        
+
         Args:
             event: Event type (complete, failed, cancelled)
             job_id: Job identifier
@@ -81,11 +83,11 @@ callback_registry = CallbackRegistry()
 
 class WebhookNotifier:
     """Sends webhook notifications for job events.
-    
+
     Example:
         notifier = WebhookNotifier()
         notifier.register_webhook("https://example.com/webhook")
-        
+
         await notifier.notify_complete(job_id, result)
     """
 
@@ -160,7 +162,7 @@ class WebhookNotifier:
             if attempt < self.max_retries - 1:
                 import asyncio
 
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(2**attempt)
 
         return False
 
@@ -171,7 +173,7 @@ class WebhookNotifier:
         data: dict[str, Any],
     ) -> int:
         """Send notifications to all registered webhooks.
-        
+
         Returns:
             Number of successful notifications
         """
@@ -181,10 +183,7 @@ class WebhookNotifier:
         import asyncio
 
         results = await asyncio.gather(
-            *[
-                self._send_webhook(url, event, job_id, data)
-                for url in self._webhooks
-            ],
+            *[self._send_webhook(url, event, job_id, data) for url in self._webhooks],
             return_exceptions=True,
         )
 

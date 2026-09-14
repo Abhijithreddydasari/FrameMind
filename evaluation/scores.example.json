@@ -1,0 +1,8 @@
+{
+  "held-out-late-red-car": {
+    "baseline_correct": true,
+    "gaze_correct": true,
+    "baseline_missed": false,
+    "gaze_missed": false
+  }
+}

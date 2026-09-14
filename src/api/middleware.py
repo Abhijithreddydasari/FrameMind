@@ -1,23 +1,22 @@
 """FastAPI middleware components."""
+
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from fastapi import Request, Response
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
 from src.core.config import settings
+from src.core.exceptions import RateLimitExceededError
 from src.core.logging import clear_log_context, get_logger, log_context
 
 logger = get_logger(__name__)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Rate limiting middleware using Redis sliding window.
-    
-    Note: Actual rate limiting logic is in the cache module.
-    This middleware adds rate limit headers to responses.
-    """
+    """Enforce the shared Redis request limit using the direct client address."""
 
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
@@ -34,11 +33,25 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.url.path in ("/health", "/ready", "/live"):
             return await call_next(request)
 
+        cache = getattr(request.app.state, "cache", None)
+        remaining = settings.rate_limit_requests
+        try:
+            if cache is not None:
+                _, remaining, _ = await cache.check_rate_limit(
+                    request.client.host if request.client else "unknown"
+                )
+        except RateLimitExceededError as exc:
+            return JSONResponse(
+                status_code=429,
+                content={"error": "rate_limit_exceeded", "retry_after": exc.retry_after},
+                headers={"Retry-After": str(exc.retry_after)},
+            )
         response = await call_next(request)
 
         # Add rate limit headers (actual limiting done at route level)
         response.headers["X-RateLimit-Limit"] = str(settings.rate_limit_requests)
         response.headers["X-RateLimit-Window"] = str(settings.rate_limit_window)
+        response.headers["X-RateLimit-Remaining"] = str(remaining)
 
         return response
 

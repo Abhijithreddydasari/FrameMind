@@ -3,6 +3,7 @@
 Provides utilities for caching frame embeddings and performing
 vector similarity operations for efficient retrieval.
 """
+
 import hashlib
 import json
 from typing import Any
@@ -11,7 +12,6 @@ import numpy as np
 from numpy.typing import NDArray
 
 from src.core.logging import get_logger
-from src.core.config import settings
 
 logger = get_logger(__name__)
 
@@ -23,10 +23,10 @@ except Exception:  # pragma: no cover - optional dependency
 
 def compute_embedding_hash(embedding: NDArray[np.float32]) -> str:
     """Compute a hash for an embedding for cache key generation.
-    
+
     Args:
         embedding: Embedding vector
-        
+
     Returns:
         Hex digest of the embedding hash
     """
@@ -40,11 +40,11 @@ def cosine_similarity(
     embeddings: NDArray[np.float32],
 ) -> NDArray[np.float32]:
     """Compute cosine similarity between query and embeddings.
-    
+
     Args:
         query: Query embedding (1D array)
         embeddings: Matrix of embeddings (2D array, each row is an embedding)
-        
+
     Returns:
         Array of similarity scores
     """
@@ -65,13 +65,13 @@ def top_k_similar(
     indices: list[int] | None = None,
 ) -> list[tuple[int, float]]:
     """Find top-k most similar embeddings.
-    
+
     Args:
         query: Query embedding
         embeddings: Matrix of embeddings
         k: Number of results to return
         indices: Optional list of indices corresponding to embeddings
-        
+
     Returns:
         List of (index, similarity) tuples, sorted by similarity descending
     """
@@ -83,10 +83,7 @@ def top_k_similar(
     if indices is None:
         indices = list(range(len(embeddings)))
 
-    results = [
-        (indices[i], float(similarities[i]))
-        for i in top_indices
-    ]
+    results = [(indices[i], float(similarities[i])) for i in top_indices]
 
     return results
 
@@ -96,13 +93,13 @@ def cluster_embeddings(
     n_clusters: int,
 ) -> tuple[list[int], list[list[int]]]:
     """Cluster embeddings and return cluster assignments.
-    
+
     Uses K-means clustering to group similar frames.
-    
+
     Args:
         embeddings: Matrix of embeddings
         n_clusters: Number of clusters
-        
+
     Returns:
         Tuple of (centroid_indices, cluster_members)
     """
@@ -146,10 +143,10 @@ def cluster_embeddings(
 
 def embedding_to_json(embedding: NDArray[np.float32]) -> str:
     """Serialize embedding to JSON string for storage.
-    
+
     Args:
         embedding: Embedding vector
-        
+
     Returns:
         JSON string representation
     """
@@ -158,10 +155,10 @@ def embedding_to_json(embedding: NDArray[np.float32]) -> str:
 
 def embedding_from_json(json_str: str) -> NDArray[np.float32]:
     """Deserialize embedding from JSON string.
-    
+
     Args:
         json_str: JSON string representation
-        
+
     Returns:
         Embedding vector
     """
@@ -171,7 +168,7 @@ def embedding_from_json(json_str: str) -> NDArray[np.float32]:
 
 class EmbeddingIndex:
     """In-memory embedding index for fast similarity search.
-    
+
     Provides efficient nearest neighbor search for small to medium
     collections. For larger collections, consider FAISS or similar.
     """
@@ -187,11 +184,11 @@ class EmbeddingIndex:
         metadata: dict[str, Any] | None = None,
     ) -> int:
         """Add an embedding to the index.
-        
+
         Args:
             embedding: Embedding vector
             metadata: Optional metadata to associate with embedding
-            
+
         Returns:
             Index of the added embedding
         """
@@ -207,11 +204,11 @@ class EmbeddingIndex:
         metadata_list: list[dict[str, Any]] | None = None,
     ) -> list[int]:
         """Add multiple embeddings to the index.
-        
+
         Args:
             embeddings: List of embedding vectors
             metadata_list: Optional list of metadata dicts
-            
+
         Returns:
             List of indices for added embeddings
         """
@@ -232,11 +229,11 @@ class EmbeddingIndex:
         k: int = 10,
     ) -> list[tuple[int, float, dict[str, Any]]]:
         """Search for similar embeddings.
-        
+
         Args:
             query: Query embedding
             k: Number of results
-            
+
         Returns:
             List of (index, similarity, metadata) tuples
         """
@@ -251,10 +248,7 @@ class EmbeddingIndex:
         top_k = min(k, len(self._embeddings))
         top_indices = np.argsort(similarities)[-top_k:][::-1]
 
-        return [
-            (int(i), float(similarities[i]), self._metadata[i])
-            for i in top_indices
-        ]
+        return [(int(i), float(similarities[i]), self._metadata[i]) for i in top_indices]
 
     def __len__(self) -> int:
         return len(self._embeddings)
@@ -340,7 +334,7 @@ class FaissEmbeddingIndex:
         query_norm = query / (np.linalg.norm(query) + 1e-7)
         scores, indices = self._index.search(query_norm.reshape(1, -1).astype(np.float32), k)
         results: list[tuple[int, float, dict[str, Any]]] = []
-        for score, idx in zip(scores[0], indices[0]):
+        for score, idx in zip(scores[0], indices[0], strict=False):
             if idx == -1:
                 continue
             emb_id = self._ids[idx]
@@ -360,17 +354,17 @@ class FaissEmbeddingIndex:
 
 class DualStreamIndex:
     """Dual-stream index for spatial + temporal embeddings.
-    
+
     Manages separate FAISS indexes for spatial (CLIP) and temporal (X-CLIP)
     embeddings, with fused search capability.
-    
+
     Example:
         index = DualStreamIndex()
-        
+
         # Add embeddings
         index.add_spatial(frame_embedding, {"frame_index": 0})
         index.add_temporal(clip_embedding, {"clip_index": 0})
-        
+
         # Search with fusion
         results = index.search_fused(query_embedding, k=10, alpha=0.5)
     """
@@ -442,13 +436,13 @@ class DualStreamIndex:
         alpha: float = 0.5,
     ) -> list[tuple[str, int, float, dict[str, Any]]]:
         """Search both indexes and fuse results.
-        
+
         Args:
             spatial_query: Query embedding for spatial search
             temporal_query: Query embedding for temporal search (optional)
             k: Number of results per stream
             alpha: Fusion weight (0=temporal only, 1=spatial only, 0.5=equal)
-            
+
         Returns:
             List of (stream, index, fused_score, metadata) tuples
         """
@@ -471,7 +465,7 @@ class DualStreamIndex:
         # Sort by fused score
         results.sort(key=lambda x: x[2], reverse=True)
 
-        return results[:k * 2]  # Return more results for diversity
+        return results[: k * 2]  # Return more results for diversity
 
     def __len__(self) -> int:
         return len(self.spatial_index) + len(self.temporal_index)

@@ -1,4 +1,5 @@
 """Domain exceptions for FrameMind."""
+
 from typing import Any
 
 

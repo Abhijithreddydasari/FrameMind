@@ -1,0 +1,13 @@
+{
+  "cases": [
+    {
+      "id": "held-out-late-red-car",
+      "video_path": "/absolute/path/to/held-out-recording.mp4",
+      "job_id": "REPLACE_WITH_COMPLETED_JOB_ID",
+      "question": "Does a red car enter the junction during this interval?",
+      "intervals": [[7190000, 7200000]],
+      "split": "held_out",
+      "critical": false
+    }
+  ]
+}

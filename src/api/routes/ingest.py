@@ -1,178 +1,127 @@
-"""Video ingestion endpoints."""
-import shutil
-from datetime import datetime
+"""Stream uploads, preserve original recordings, and enqueue durable jobs."""
+
 from pathlib import Path
+from typing import Annotated
 from uuid import UUID, uuid4
 
 import aiofiles
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
-from pydantic import BaseModel
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 
-from src.api.deps import MetadataStoreDep, RedisCacheDep, SettingsDep
-from src.core.exceptions import UnsupportedFormatError, VideoTooLargeError
-from src.core.logging import get_logger
-from src.core.models import JobStatus, VideoUploadResponse
-from src.workers.pipeline import get_redis_settings
-
-logger = get_logger(__name__)
+from src.api.deps import MetadataStoreDep, SettingsDep
+from src.workers.orchestrator import JobOrchestrator
 
 router = APIRouter()
 
 
-class IngestStatusResponse(BaseModel):
-    """Status of an ingestion job."""
-
-    job_id: UUID
-    status: JobStatus
-    progress: float
-    message: str | None = None
-    error: str | None = None
-    created_at: datetime
-    updated_at: datetime
-
-
-@router.post("/upload", response_model=VideoUploadResponse, status_code=202)
+@router.post("/upload", status_code=202)
 async def upload_video(
+    request: Request,
     settings: SettingsDep,
-    cache: RedisCacheDep,
-    metadata_store: MetadataStoreDep,
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-) -> VideoUploadResponse:
-    """Upload a video for processing.
-    
-    The video will be validated, stored, and queued for async processing.
-    Returns immediately with a job_id to track progress.
-    """
-    # Validate file type
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="Filename required")
-
-    extension = Path(file.filename).suffix.lower().lstrip(".")
-    if extension not in settings.allowed_video_formats:
-        raise UnsupportedFormatError(
-            f"Format '{extension}' not supported",
-            details={"allowed": settings.allowed_video_formats},
-        )
-
-    # Check file size (if content-length header is available)
-    if file.size and file.size > settings.max_video_size_mb * 1024 * 1024:
-        raise VideoTooLargeError(
-            f"Video exceeds {settings.max_video_size_mb}MB limit",
-            details={"size_bytes": file.size, "max_bytes": settings.max_video_size_mb * 1024 * 1024},
-        )
-
-    # Generate job ID and storage path
+    store: MetadataStoreDep,
+    file: Annotated[UploadFile, File(...)],
+):
+    suffix = Path(file.filename or "").suffix.lower().lstrip(".")
+    if suffix not in settings.allowed_video_formats:
+        raise HTTPException(415, "Unsupported video format")
+    limit = settings.max_video_size_mb * 1024**2
+    if file.size and file.size > limit:
+        raise HTTPException(413, "Video exceeds configured upload limit; use local ingestion")
     job_id = uuid4()
-    video_dir = settings.storage_path / "videos" / str(job_id)
-    video_dir.mkdir(parents=True, exist_ok=True)
-    video_path = video_dir / f"source.{extension}"
-
-    # Stream file to disk
+    directory = settings.storage_path / "videos" / str(job_id)
+    directory.mkdir(parents=True)
+    path = directory / f"source.{suffix}"
+    size = 0
     try:
-        async with aiofiles.open(video_path, "wb") as out_file:
-            while chunk := await file.read(1024 * 1024):  # 1MB chunks
-                await out_file.write(chunk)
-    except Exception as e:
-        logger.error("Failed to save video", job_id=str(job_id), error=str(e))
-        shutil.rmtree(video_dir, ignore_errors=True)
-        raise HTTPException(status_code=500, detail="Failed to save video")
-
-    # Verify final file size
-    actual_size = video_path.stat().st_size
-    if actual_size > settings.max_video_size_mb * 1024 * 1024:
-        shutil.rmtree(video_dir, ignore_errors=True)
-        raise VideoTooLargeError(
-            f"Video exceeds {settings.max_video_size_mb}MB limit",
-            details={"size_bytes": actual_size},
+        async with aiofiles.open(path, "wb") as handle:
+            while block := await file.read(1024**2):
+                size += len(block)
+                if size > limit:
+                    raise HTTPException(413, "Video exceeds configured upload limit")
+                await handle.write(block)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        directory.rmdir()
+        raise
+    finally:
+        await file.close()
+    if not size:
+        path.unlink()
+        directory.rmdir()
+        raise HTTPException(422, "Empty upload")
+    await store.create_job(
+        job_id,
+        {
+            "filename": file.filename,
+            "video_path": str(path.resolve()),
+            "result_data": {"needs_reindex": False},
+        },
+    )
+    try:
+        await request.app.state.queue.enqueue_job(
+            "process_video", str(job_id), str(path.resolve()), _job_id=f"ingest:{job_id}:new:0"
         )
+    except Exception as exc:
+        await store.update_job(job_id, {"status": "failed", "error": "Unable to enqueue ingestion"})
+        raise HTTPException(
+            503, {"job_id": str(job_id), "message": "Queue unavailable; recording retained"}
+        ) from exc
+    return {"job_id": str(job_id), "status": "pending", "message": "Recording queued"}
 
-    # Store job state in Redis
-    job_data = {
-        "status": JobStatus.PENDING.value,
-        "video_path": str(video_path),
-        "filename": file.filename,
-        "progress": 0.0,
-        "created_at": datetime.utcnow().isoformat(),
-        "updated_at": datetime.utcnow().isoformat(),
+
+@router.get("/status/{job_id}")
+async def get_ingest_status(job_id: UUID, store: MetadataStoreDep):
+    job = await store.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    state = job["pipeline"]
+    return {
+        "job_id": str(job_id),
+        "status": job["status"],
+        "progress": job["progress"],
+        "created_at": job["created_at"],
+        "updated_at": job["updated_at"],
+        "error": job["error"],
+        "duration_ms": job["duration_ms"],
+        "coverage_ms": state.get("checkpoint_ms", 0),
+        "remaining_ms": max(0, (job["duration_ms"] or 0) - state.get("checkpoint_ms", 0)),
+        "streams": state.get("streams", {}),
+        "warnings": state.get("warnings", []),
+        "needs_reindex": state.get("needs_reindex", False),
     }
-    await cache.set_job(job_id, job_data)
-    await metadata_store.create_job(job_id, job_data)
-
-    # Queue for async processing
-    background_tasks.add_task(enqueue_processing, job_id, str(video_path))
-
-    logger.info("Video uploaded", job_id=str(job_id), filename=file.filename)
-
-    return VideoUploadResponse(
-        job_id=job_id,
-        status=JobStatus.PENDING,
-        message="Video uploaded successfully. Processing will begin shortly.",
-        created_at=datetime.utcnow(),
-    )
-
-
-async def enqueue_processing(job_id: UUID, video_path: str) -> None:
-    """Enqueue video for async processing via ARQ."""
-    try:
-        from arq.connections import create_pool
-
-        redis = await create_pool(get_redis_settings())
-        await redis.enqueue_job("process_video", str(job_id), video_path)
-        await redis.close()
-        logger.info("Job enqueued for processing", job_id=str(job_id), video_path=video_path)
-    except Exception as e:
-        logger.error("Failed to enqueue job", job_id=str(job_id), error=str(e))
-
-
-@router.get("/status/{job_id}", response_model=IngestStatusResponse)
-async def get_ingest_status(
-    job_id: UUID,
-    cache: RedisCacheDep,
-) -> IngestStatusResponse:
-    """Get the status of a video ingestion job."""
-    job_data = await cache.get_job(job_id)
-
-    if not job_data:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    return IngestStatusResponse(
-        job_id=job_id,
-        status=JobStatus(job_data.get("status", "pending")),
-        progress=float(job_data.get("progress", 0.0)),
-        message=job_data.get("message"),
-        error=job_data.get("error"),
-        created_at=datetime.fromisoformat(job_data["created_at"]),
-        updated_at=datetime.fromisoformat(job_data["updated_at"]),
-    )
 
 
 @router.delete("/{job_id}", status_code=204)
-async def cancel_job(
-    job_id: UUID,
-    settings: SettingsDep,
-    cache: RedisCacheDep,
-) -> None:
-    """Cancel a pending or processing job."""
-    job_data = await cache.get_job(job_id)
+async def cancel_job(job_id: UUID, request: Request, store: MetadataStoreDep):
+    job = await store.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job["status"] in ("complete", "failed", "cancelled"):
+        raise HTTPException(409, "Job is already terminal")
+    await JobOrchestrator(store, request.app.state.queue).update(job_id, status="cancelled")
 
-    if not job_data:
-        raise HTTPException(status_code=404, detail="Job not found")
 
-    current_status = JobStatus(job_data.get("status", "pending"))
-
-    if current_status in (JobStatus.COMPLETE, JobStatus.FAILED, JobStatus.CANCELLED):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot cancel job in {current_status.value} state",
+@router.post("/{job_id}/reindex", status_code=202)
+async def reindex_job(job_id: UUID, request: Request, store: MetadataStoreDep):
+    job = await store.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job["status"] not in ("complete", "failed"):
+        raise HTTPException(409, "Only complete or failed recordings can be reindexed")
+    # A new job fences old tasks and preserves the previous searchable generation.
+    new_id = uuid4()
+    await store.create_job(
+        new_id,
+        {
+            "filename": job["filename"],
+            "video_path": job["video_path"],
+            "result_data": {"needs_reindex": False, "replaces": str(job_id)},
+        },
+    )
+    try:
+        await request.app.state.queue.enqueue_job(
+            "process_video", str(new_id), job["video_path"], _job_id=f"ingest:{new_id}:new:0"
         )
-
-    # Update status
-    await cache.update_job_status(job_id, JobStatus.CANCELLED)
-
-    # Clean up files
-    video_dir = settings.storage_path / "videos" / str(job_id)
-    if video_dir.exists():
-        shutil.rmtree(video_dir, ignore_errors=True)
-
-    logger.info("Job cancelled", job_id=str(job_id))
+    except Exception as exc:
+        await store.update_job(new_id, {"status": "failed", "error": "Queue unavailable"})
+        raise HTTPException(503, "Unable to enqueue reindex") from exc
+    return {"job_id": str(new_id), "replaces": str(job_id), "status": "pending"}

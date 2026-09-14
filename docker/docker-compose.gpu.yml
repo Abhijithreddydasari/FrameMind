@@ -1,0 +1,19 @@
+services:
+  video-backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gpu
+      args:
+        AUTOGAZE_COMMIT: ${AUTOGAZE_COMMIT:?Set a reviewed AutoGaze code commit}
+    gpus: all
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      AUTOGAZE_TOKEN: ${AUTOGAZE_TOKEN:?Set a service token}
+      NVILA_REVISION: ${NVILA_REVISION:?Set a reviewed model commit}
+      AUTOGAZE_REVISION: ${AUTOGAZE_REVISION:?Set a reviewed model commit}
+    volumes:
+      - gpu-models:/models
+    restart: unless-stopped
+volumes:
+  gpu-models:

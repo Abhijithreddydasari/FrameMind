@@ -8,9 +8,10 @@ This module orchestrates the frame selection pipeline, combining:
 
 The goal is to reduce thousands of frames to 10-20 key frames for VLM analysis.
 """
-from dataclasses import dataclass, field
+
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 import cv2
 import numpy as np
@@ -58,19 +59,19 @@ class SelectionResult:
 
 class FrameSelector:
     """Orchestrates intelligent frame selection from video.
-    
+
     Combines multiple signals to select the most informative frames
     while ensuring temporal coverage and visual diversity.
-    
+
     Example:
         selector = FrameSelector()
         await selector.initialize()
-        
+
         result = await selector.select_from_video(
             video_path="video.mp4",
             query="What is happening in the video?",
         )
-        
+
         print(f"Selected {len(result.selected_indices)} frames")
     """
 
@@ -100,12 +101,12 @@ class FrameSelector:
         sample_fps: float | None = None,
     ) -> SelectionResult:
         """Select key frames from a video file.
-        
+
         Args:
             video_path: Path to video file
             query: Optional query to boost relevant frames
             sample_fps: Frame extraction rate (default: settings.frame_extraction_fps)
-            
+
         Returns:
             SelectionResult with selected frames and metadata
         """
@@ -130,6 +131,8 @@ class FrameSelector:
 
         # Detect shot boundaries
         boundaries = self.shot_detector.detect_from_frames(frames)
+        for boundary in boundaries:
+            boundary.frame_index = frame_indices[boundary.frame_index]
         boundary_indices = {b.frame_index for b in boundaries}
 
         logger.info("Shot boundaries detected", count=len(boundaries))
@@ -172,7 +175,7 @@ class FrameSelector:
         sample_fps: float,
     ) -> tuple[list[NDArray[np.uint8]], list[int], list[int], float]:
         """Extract frames from video at specified rate.
-        
+
         Returns:
             Tuple of (frames, frame_indices, timestamps_ms, video_fps)
         """
@@ -208,12 +211,10 @@ class FrameSelector:
 
                 frame_count += 1
 
-                if len(frames) >= settings.max_frames_per_video:
-                    logger.warning(
-                        "Frame limit reached",
-                        limit=settings.max_frames_per_video,
+                if len(frames) >= settings.max_frames_per_video and frame_count < total_frames:
+                    raise FrameExtractionError(
+                        "Eager frame limit reached; use checkpointed ingestion for long recordings"
                     )
-                    break
 
             return frames, frame_indices, timestamps_ms, video_fps
 
@@ -228,7 +229,7 @@ class FrameSelector:
         query: str | None,
     ) -> tuple[list[int], dict[int, float]]:
         """Score frames and select top candidates.
-        
+
         Returns:
             Tuple of (selected_indices, score_dict)
         """
@@ -256,7 +257,9 @@ class FrameSelector:
 
         for i, emb in enumerate(embeddings):
             # Temporal position (0 to 1)
-            position = timestamps_ms[i] / total_duration if total_duration > 0 else 0
+            position = (
+                (timestamps_ms[i] - timestamps_ms[0]) / total_duration if total_duration > 0 else 0
+            )
             # Score favors diversity in position
             temporal_scores[emb.frame_index] = 1.0 - abs(position - 0.5) * 0.5
 
@@ -305,25 +308,40 @@ class FrameSelector:
         # Fill remaining with diversity-based selection
         if target > 0:
             # Filter out already selected
-            remaining_embeddings = [
-                e for e in embeddings if e.frame_index not in selected
-            ]
+            remaining_embeddings = [e for e in embeddings if e.frame_index not in selected]
 
             if remaining_embeddings:
-                diverse_indices = self.clip_scorer.find_diverse_frames(
-                    remaining_embeddings,
-                    n_frames=target,
-                )
-                selected.extend(diverse_indices)
+                # Greedy relevance/diversity selection actually uses the computed scores.
+                by_id = {e.frame_index: e for e in embeddings}
+                while remaining_embeddings and target > 0:
+
+                    def utility(candidate):
+                        redundancy = max(
+                            (
+                                float(np.dot(candidate.embedding, by_id[idx].embedding))
+                                for idx in selected
+                                if idx in by_id
+                            ),
+                            default=0.0,
+                        )
+                        return (
+                            scores[candidate.frame_index]
+                            - self.config.diversity_weight * redundancy
+                        )
+
+                    best = max(remaining_embeddings, key=utility)
+                    selected.append(best.frame_index)
+                    remaining_embeddings = [
+                        e for e in remaining_embeddings if e.frame_index != best.frame_index
+                    ]
+                    target -= 1
 
         # Sort by temporal order
         selected = sorted(set(selected))
 
         # Enforce temporal gap
         if self.config.min_temporal_gap_ms > 0:
-            selected = self._enforce_temporal_gap(
-                selected, timestamps_ms, embeddings
-            )
+            selected = self._enforce_temporal_gap(selected, timestamps_ms, embeddings)
 
         logger.info(
             "Frame selection complete",
@@ -405,7 +423,7 @@ class FrameSelector:
         query: str | None = None,
     ) -> SelectionResult:
         """Select key frames from pre-extracted frames.
-        
+
         Useful when frames are already extracted or coming from a stream.
         """
         self._ensure_initialized()
@@ -429,6 +447,8 @@ class FrameSelector:
 
         # Detect shot boundaries
         boundaries = self.shot_detector.detect_from_frames(list(frames))
+        for boundary in boundaries:
+            boundary.frame_index = frame_indices[boundary.frame_index]
         boundary_indices = {b.frame_index for b in boundaries}
 
         # Compute embeddings
@@ -455,7 +475,9 @@ class FrameSelector:
                 video_id=video_id,
                 index=idx,
                 timestamp_ms=timestamps_ms[frame_indices.index(idx)] if idx in frame_indices else 0,
-                frame_type=FrameType.SCENE_BOUNDARY if idx in boundary_indices else FrameType.REGULAR,
+                frame_type=FrameType.SCENE_BOUNDARY
+                if idx in boundary_indices
+                else FrameType.REGULAR,
                 path="",
             )
             for idx in selected_indices

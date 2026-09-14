@@ -1,5 +1,6 @@
 """Application configuration via Pydantic Settings."""
-from enum import Enum
+
+from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -8,7 +9,7 @@ from pydantic import Field, RedisDsn, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Environment(str, Enum):
+class Environment(StrEnum):
     """Application environment."""
 
     DEVELOPMENT = "development"
@@ -28,7 +29,7 @@ class Settings(BaseSettings):
 
     # Application
     app_name: str = "FrameMind"
-    app_version: str = "0.1.0"
+    app_version: str = "0.2.0"
     environment: Environment = Environment.DEVELOPMENT
     debug: bool = False
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
@@ -45,7 +46,7 @@ class Settings(BaseSettings):
     # Storage
     storage_backend: Literal["local", "s3"] = "local"
     storage_path: Path = Field(default=Path("./data"))
-    max_video_size_mb: int = 500
+    max_video_size_mb: int = 20480
     allowed_video_formats: list[str] = Field(
         default_factory=lambda: ["mp4", "mkv", "webm", "avi", "mov"]
     )
@@ -56,17 +57,17 @@ class Settings(BaseSettings):
     # ML - Spatial (CLIP)
     clip_model: str = "openai/clip-vit-base-patch32"
     clip_device: Literal["cpu", "cuda", "mps"] = "cpu"
-    frame_extraction_fps: float = 2.0
+    frame_extraction_fps: float = Field(default=2.0, gt=0, le=60)
     max_frames_per_video: int = 1000
     target_keyframes: int = 30
-    spatial_batch_size: int = 32
+    spatial_batch_size: int = Field(default=32, ge=1, le=128)
 
     # ML - Temporal (X-CLIP)
     xclip_model: str = "microsoft/xclip-base-patch32"
-    temporal_window_frames: int = 16  # Frames per clip
-    temporal_fps: float = 8.0  # FPS for clip extraction
-    temporal_stride: float = 0.5  # Overlap ratio (0.5 = 50%)
-    temporal_batch_size: int = 8  # 0 = auto
+    temporal_window_frames: int = 8  # Checked against the loaded checkpoint
+    temporal_fps: float = Field(default=8.0, gt=0, le=60)
+    temporal_stride: float = Field(default=0.5, ge=0, lt=1)
+    temporal_batch_size: int = Field(default=8, ge=1, le=64)
     use_temporal: bool = True  # Enable temporal stream
 
     # GPU Parallelization
@@ -93,15 +94,28 @@ class Settings(BaseSettings):
     rate_limit_window: int = 60  # seconds
 
     # Worker
-    worker_concurrency: int = 4
+    worker_concurrency: int = 1
     job_timeout: int = 600  # 10 minutes
+
+    chunk_seconds: int = Field(default=60, ge=1, le=600)
+    decode_size: int = Field(default=224, ge=32, le=1024)
+    index_cache_mb: int = Field(default=256, ge=1)
+    candidate_count: int = Field(default=50, ge=1, le=1000)
+    max_intervals: int = Field(default=5, ge=1, le=20)
+    context_seconds: float = Field(default=2.0, ge=0, le=30)
+    model_revision: str = "main"
+    autogaze_enabled: bool = False
+    autogaze_url: str = ""
+    autogaze_token: str = ""
+    autogaze_timeout: float = 300.0
+    video_max_frames: int = Field(default=128, ge=16, le=1024)
+    video_max_tiles: int = Field(default=12, ge=1, le=48)
 
     @field_validator("storage_path", mode="before")
     @classmethod
     def ensure_path(cls, v: str | Path) -> Path:
         """Convert string to Path and ensure it exists."""
         path = Path(v)
-        path.mkdir(parents=True, exist_ok=True)
         return path
 
     @property

@@ -4,8 +4,8 @@ This module provides CLIP model integration for computing frame embeddings
 and scoring frame relevance against text queries. It's the core of the
 intelligent frame selection pipeline.
 """
-from dataclasses import dataclass, field
-from pathlib import Path
+
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -13,6 +13,7 @@ import torch
 from numpy.typing import NDArray
 from PIL import Image
 
+from src.core.concurrency import run_blocking
 from src.core.config import settings
 from src.core.exceptions import MLModelError
 from src.core.logging import get_logger
@@ -28,6 +29,7 @@ class CLIPConfig:
     device: str = "cpu"
     batch_size: int = 32
     cache_embeddings: bool = True
+    revision: str = "main"
 
 
 @dataclass
@@ -41,20 +43,20 @@ class FrameEmbedding:
 
 class CLIPScorer:
     """CLIP-based frame embedding and relevance scoring.
-    
+
     Provides functionality for:
     - Computing frame embeddings using CLIP vision encoder
     - Computing text embeddings for queries
     - Scoring frame relevance against queries
     - Batch processing for efficiency
-    
+
     Example:
         scorer = CLIPScorer()
         await scorer.load_model()
-        
+
         # Get frame embeddings
         embeddings = scorer.embed_frames(frames)
-        
+
         # Score against query
         scores = scorer.score_relevance(embeddings, "a person speaking")
     """
@@ -63,6 +65,8 @@ class CLIPScorer:
         self.config = config or CLIPConfig(
             model_name=settings.clip_model,
             device=settings.clip_device,
+            batch_size=settings.spatial_batch_size,
+            revision=settings.model_revision,
         )
         self._model: Any = None
         self._processor: Any = None
@@ -76,11 +80,15 @@ class CLIPScorer:
 
     async def load_model(self) -> None:
         """Load CLIP model and processor.
-        
+
         Uses lazy loading and caches the model in memory.
         """
         if self._loaded:
             return
+
+        await run_blocking(self._load_model_sync)
+
+    def _load_model_sync(self) -> None:
 
         try:
             # Import here to avoid loading torch on startup
@@ -92,8 +100,12 @@ class CLIPScorer:
                 device=self.config.device,
             )
 
-            self._processor = CLIPProcessor.from_pretrained(self.config.model_name)
-            self._model = CLIPModel.from_pretrained(self.config.model_name)
+            self._processor = CLIPProcessor.from_pretrained(
+                self.config.model_name, revision=self.config.revision
+            )
+            self._model = CLIPModel.from_pretrained(
+                self.config.model_name, revision=self.config.revision
+            )
             self._model.to(self.config.device)
             self._model.eval()
 
@@ -103,7 +115,7 @@ class CLIPScorer:
 
         except Exception as e:
             logger.error("Failed to load CLIP model", error=str(e))
-            raise MLModelError(f"Failed to load CLIP model: {e}")
+            raise MLModelError(f"Failed to load CLIP model: {e}") from e
 
     def _ensure_loaded(self) -> None:
         """Ensure model is loaded before inference."""
@@ -117,12 +129,12 @@ class CLIPScorer:
         timestamps_ms: list[int] | None = None,
     ) -> list[FrameEmbedding]:
         """Compute CLIP embeddings for a batch of frames.
-        
+
         Args:
             frames: List of frames (numpy arrays or PIL Images)
             frame_indices: Optional frame indices for tracking
             timestamps_ms: Optional timestamps for each frame
-            
+
         Returns:
             List of FrameEmbedding objects
         """
@@ -137,6 +149,7 @@ class CLIPScorer:
             if isinstance(frame, np.ndarray):
                 # Assume BGR from OpenCV, convert to RGB
                 import cv2
+
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 pil_frames.append(Image.fromarray(rgb_frame))
             else:
@@ -173,8 +186,8 @@ class CLIPScorer:
             # Convert to numpy
             batch_embeddings = image_features.cpu().numpy().astype(np.float32)
 
-            for i, (idx, ts, emb) in enumerate(
-                zip(batch_indices, batch_timestamps, batch_embeddings)
+            for _i, (idx, ts, emb) in enumerate(
+                zip(batch_indices, batch_timestamps, batch_embeddings, strict=False)
             ):
                 embeddings.append(
                     FrameEmbedding(
@@ -190,10 +203,10 @@ class CLIPScorer:
 
     def embed_text(self, text: str) -> NDArray[np.float32]:
         """Compute CLIP text embedding for a query.
-        
+
         Args:
             text: Query text
-            
+
         Returns:
             Normalized text embedding
         """
@@ -220,11 +233,11 @@ class CLIPScorer:
         query: str,
     ) -> list[tuple[int, float]]:
         """Score frame relevance against a text query.
-        
+
         Args:
             frame_embeddings: List of frame embeddings
             query: Text query
-            
+
         Returns:
             List of (frame_index, relevance_score) tuples, sorted by score descending
         """
@@ -256,12 +269,12 @@ class CLIPScorer:
         embeddings: list[FrameEmbedding],
     ) -> NDArray[np.float32]:
         """Compute pairwise similarity matrix between frames.
-        
+
         Useful for clustering and diversity sampling.
-        
+
         Args:
             embeddings: List of frame embeddings
-            
+
         Returns:
             NxN similarity matrix
         """
@@ -279,14 +292,14 @@ class CLIPScorer:
         n_frames: int,
     ) -> list[int]:
         """Select diverse frames using max-min distance sampling.
-        
+
         Greedy algorithm that iteratively selects frames that are
         maximally different from already selected frames.
-        
+
         Args:
             embeddings: List of frame embeddings
             n_frames: Number of frames to select
-            
+
         Returns:
             List of selected frame indices
         """
@@ -338,6 +351,7 @@ class CLIPScorer:
 
             # Force garbage collection
             import gc
+
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()

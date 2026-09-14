@@ -1,7 +1,7 @@
 [project]
 name = "framemind"
-version = "0.1.0"
-description = "Production-grade Video Intelligence Engine with CLIP-based frame selection and VLM integration"
+version = "0.2.0"
+description = "Long-video retrieval and evidence-grounded visual analysis"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -49,10 +49,8 @@ dependencies = [
     "scikit-learn>=1.4.0,<2.0.0",
     "faiss-cpu>=1.8.0,<2.0.0",
     
-    # Vector search
-    "faiss-cpu>=1.7.0,<2.0.0",
-    
     # Video processing
+    "av>=13.0.0,<17.0.0",
     "ffmpeg-python>=0.2.0,<1.0.0",
     
     # Utilities
@@ -62,6 +60,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+benchmark = ["psutil>=5.9.0,<8.0.0"]
 dev = [
     "pytest>=8.0.0,<9.0.0",
     "pytest-asyncio>=0.23.0,<1.0.0",
@@ -93,6 +92,7 @@ gpu = [
 
 [project.scripts]
 framemind = "src.api.main:run"
+framemind-ingest = "src.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -119,3 +119,4 @@ warn_unused_ignores = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-v --tb=short"
+markers = ["models: requires downloaded model checkpoints", "benchmark: long resource acceptance test", "gpu: requires a configured GPU service"]

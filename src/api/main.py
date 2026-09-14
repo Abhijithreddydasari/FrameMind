@@ -1,7 +1,7 @@
 """FastAPI application factory and lifespan management."""
-import asyncio
+
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -33,23 +33,36 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if not settings.is_production:
         logger.info("Development mode: ML models will be loaded on first use")
 
-    # Initialize metadata store
-    metadata_store = MetadataStore()
-    await metadata_store.initialize()
-
-    # Store shared state in app.state
-    app.state.ready = True
-    app.state.metadata_store = metadata_store
-
-    yield
-
-    # Shutdown
-    logger.info("Shutting down FrameMind")
     app.state.ready = False
+    settings.storage_path.mkdir(parents=True, exist_ok=True)
+    metadata_store = MetadataStore()
+    app.state.metadata_store = metadata_store
+    from arq.connections import create_pool
 
-    # Cleanup tasks
-    await metadata_store.close()
-    await asyncio.sleep(0.1)  # Allow pending requests to complete
+    from src.cache.redis_cache import RedisCache
+    from src.services.query import QueryService
+    from src.workers.pipeline import get_redis_settings
+
+    cache = RedisCache()
+    app.state.cache = cache
+    queue = None
+    service = QueryService(metadata_store, settings, cache)
+    app.state.query_service = service
+    try:
+        await metadata_store.initialize()
+        queue = await create_pool(get_redis_settings())
+        app.state.queue = queue
+        await cache.connect()
+        app.state.ready = True
+        yield
+    finally:
+        logger.info("Shutting down FrameMind")
+        app.state.ready = False
+        await service.close()
+        await cache.close()
+        if queue is not None:
+            await queue.aclose()
+        await metadata_store.close()
 
 
 def create_app() -> FastAPI:
@@ -57,7 +70,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
-        description="Production-grade Video Intelligence Engine with CLIP-based frame selection and VLM integration",
+        description="Long-video retrieval and evidence-grounded visual analysis",
         docs_url="/docs" if settings.debug else None,
         redoc_url="/redoc" if settings.debug else None,
         openapi_url="/openapi.json" if settings.debug else None,
@@ -68,7 +81,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        allow_credentials=True,
+        allow_credentials="*" not in settings.cors_origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -78,9 +91,7 @@ def create_app() -> FastAPI:
 
     # Exception handlers
     @app.exception_handler(RateLimitExceededError)
-    async def rate_limit_handler(
-        request: Request, exc: RateLimitExceededError
-    ) -> JSONResponse:
+    async def rate_limit_handler(request: Request, exc: RateLimitExceededError) -> JSONResponse:
         return JSONResponse(
             status_code=429,
             content={
@@ -92,9 +103,7 @@ def create_app() -> FastAPI:
         )
 
     @app.exception_handler(FrameMindError)
-    async def framemind_error_handler(
-        request: Request, exc: FrameMindError
-    ) -> JSONResponse:
+    async def framemind_error_handler(request: Request, exc: FrameMindError) -> JSONResponse:
         logger.error("Application error", error=exc.message, details=exc.details)
         return JSONResponse(
             status_code=400,

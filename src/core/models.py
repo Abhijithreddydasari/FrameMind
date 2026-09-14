@@ -1,13 +1,14 @@
 """Domain models for FrameMind."""
+
 from datetime import datetime
-from enum import Enum
-from typing import Any
+from enum import StrEnum
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
-class JobStatus(str, Enum):
+class JobStatus(StrEnum):
     """Video processing job status."""
 
     PENDING = "pending"
@@ -20,7 +21,7 @@ class JobStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-class FrameType(str, Enum):
+class FrameType(StrEnum):
     """Type of extracted frame."""
 
     REGULAR = "regular"
@@ -54,6 +55,26 @@ class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
     max_frames: int = Field(default=10, ge=1, le=50)
     include_timestamps: bool = True
+    use_cache: bool = True
+    analysis_backend: Literal["default", "none", "nvila_autogaze"] = "default"
+
+
+class InspectRequest(QueryRequest):
+    start_ms: int = Field(ge=0)
+    end_ms: int = Field(gt=0)
+    crop: tuple[float, float, float, float] | None = None
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> "InspectRequest":
+        if self.end_ms <= self.start_ms:
+            raise ValueError("end_ms must be greater than start_ms")
+        if self.end_ms - self.start_ms > 60_000:
+            raise ValueError("Inspection intervals cannot exceed 60 seconds")
+        if self.crop:
+            x1, y1, x2, y2 = self.crop
+            if not (0 <= x1 < x2 <= 1 and 0 <= y1 < y2 <= 1):
+                raise ValueError("crop must be normalized x1,y1,x2,y2 coordinates")
+        return self
 
 
 class QueryResponse(BaseModel):
@@ -62,19 +83,31 @@ class QueryResponse(BaseModel):
     job_id: UUID
     query: str
     answer: str
-    confidence: float = Field(ge=0.0, le=1.0)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     frames_analyzed: int
     processing_time_ms: int
     sources: list["FrameSource"]
+    backend_used: str = "none"
+    analysis_status: Literal["complete", "retrieval_only", "failed", "insufficient_evidence"] = (
+        "retrieval_only"
+    )
+    index_generation: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
 
 
 class FrameSource(BaseModel):
     """Source frame used in query response."""
 
-    frame_index: int
+    frame_index: int | None = None
     timestamp_ms: int
     relevance_score: float
     description: str | None = None
+    evidence_id: str = ""
+    source_kind: Literal["frame", "clip"] = "frame"
+    start_ms: int | None = None
+    end_ms: int | None = None
+    frame_timestamps_ms: list[int] = Field(default_factory=list)
 
 
 class JobStatusResponse(BaseModel):

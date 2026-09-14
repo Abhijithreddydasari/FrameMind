@@ -108,3 +108,7 @@ temp/
 
 # HuggingFace cache (models downloaded at runtime)
 .cache/
+
+# Local notes / Cursor artifacts (do not commit)
+Cursor.md
+INTERVIEW_SUMMARY.md
