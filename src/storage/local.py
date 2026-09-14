@@ -1,4 +1,5 @@
 """Local filesystem storage backend."""
+
 import shutil
 from pathlib import Path
 from typing import BinaryIO
@@ -15,16 +16,16 @@ logger = get_logger(__name__)
 
 class LocalStorage(StorageBackend):
     """Local filesystem storage backend.
-    
+
     Stores files in the configured storage path with
     hierarchical directory structure.
-    
+
     Example:
         storage = LocalStorage()
-        
+
         # Save a file
         path = await storage.save("videos/abc123/source.mp4", video_bytes)
-        
+
         # Load it back
         data = await storage.load("videos/abc123/source.mp4")
     """
@@ -64,7 +65,7 @@ class LocalStorage(StorageBackend):
 
         except Exception as e:
             logger.error("Failed to save file", key=key, error=str(e))
-            raise StorageError(f"Failed to save {key}: {e}")
+            raise StorageError(f"Failed to save {key}: {e}") from e
 
     async def load(self, key: str) -> bytes:
         """Load data from local filesystem."""
@@ -79,7 +80,7 @@ class LocalStorage(StorageBackend):
 
         except Exception as e:
             logger.error("Failed to load file", key=key, error=str(e))
-            raise StorageError(f"Failed to load {key}: {e}")
+            raise StorageError(f"Failed to load {key}: {e}") from e
 
     async def delete(self, key: str) -> bool:
         """Delete file from local filesystem."""

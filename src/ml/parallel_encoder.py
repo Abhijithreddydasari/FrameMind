@@ -3,14 +3,16 @@
 Provides device management, async batching, and producer-consumer
 patterns for efficient GPU utilization during video processing.
 """
+
 import asyncio
 import gc
+from collections.abc import AsyncIterable as AsyncIterableType
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Callable, Coroutine, Generic, TypeVar
+from enum import StrEnum
+from typing import Any, Generic, TypeVar
 
 import torch
-from numpy.typing import NDArray
 
 from src.core.logging import get_logger
 
@@ -20,7 +22,7 @@ T = TypeVar("T")
 R = TypeVar("R")
 
 
-class DeviceType(str, Enum):
+class DeviceType(StrEnum):
     """Supported compute devices."""
 
     CPU = "cpu"
@@ -50,14 +52,14 @@ class DeviceAllocation:
 
 class DeviceManager:
     """Manages GPU/CPU device allocation for encoders.
-    
+
     Auto-detects available devices and allocates them optimally
     across spatial (CLIP) and temporal (X-CLIP) encoders.
-    
+
     Example:
         manager = DeviceManager()
         manager.initialize()
-        
+
         clip_device = manager.allocate("clip", memory_mb=400)
         xclip_device = manager.allocate("xclip", memory_mb=600)
     """
@@ -163,12 +165,12 @@ class DeviceManager:
         prefer_gpu: bool = True,
     ) -> DeviceAllocation:
         """Allocate a device for an encoder.
-        
+
         Args:
             encoder_name: Name of encoder (e.g., "clip", "xclip")
             memory_mb: Required memory (defaults to MODEL_MEMORY)
             prefer_gpu: Prefer GPU over CPU
-            
+
         Returns:
             DeviceAllocation with device string and batch size
         """
@@ -221,9 +223,9 @@ class DeviceManager:
 
     def allocate_dual_stream(self) -> tuple[DeviceAllocation, DeviceAllocation]:
         """Allocate devices for both CLIP and X-CLIP.
-        
+
         Optimizes for multi-GPU if available.
-        
+
         Returns:
             Tuple of (clip_allocation, xclip_allocation)
         """
@@ -290,17 +292,17 @@ class BatchItem(Generic[T]):
 
 class BatchQueue(Generic[T]):
     """Async queue with batching support for producer-consumer pattern.
-    
+
     Collects items and yields them in batches for efficient GPU processing.
-    
+
     Example:
         queue = BatchQueue[np.ndarray](batch_size=8, prefetch=2)
-        
+
         # Producer
         for frame in frames:
             await queue.put(frame)
         await queue.finish()
-        
+
         # Consumer
         async for batch in queue.batches():
             embeddings = encoder.encode(batch)
@@ -340,19 +342,21 @@ class BatchQueue(Generic[T]):
         self._finished = True
         await self._queue.put(None)  # Sentinel
 
-    async def batches(self) -> "AsyncBatchIterator[T]":
+    def batches(self) -> "AsyncBatchIterator[T]":
         """Iterate over batches."""
         return AsyncBatchIterator(self)
 
     async def get_batch(self) -> list[BatchItem[T]] | None:
         """Get next batch of items.
-        
+
         Returns:
             List of batch items, or None if queue is exhausted
         """
         batch: list[BatchItem[T]] = []
 
         while len(batch) < self.batch_size:
+            if self.is_finished:
+                break
             try:
                 item = await asyncio.wait_for(
                     self._queue.get(),
@@ -365,7 +369,7 @@ class BatchQueue(Generic[T]):
 
                 batch.append(item)
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Return partial batch on timeout
                 break
 
@@ -411,21 +415,21 @@ EncoderFn = Callable[[list[T]], Coroutine[Any, Any, list[R]]]
 
 class EncodingPipeline(Generic[T, R]):
     """Producer-consumer pipeline for parallel encoding.
-    
+
     Coordinates CPU extraction and GPU encoding with proper
     batching and async overlap.
-    
+
     Example:
         pipeline = EncodingPipeline(
             encoder_fn=clip_scorer.embed_frames,
             batch_size=8,
             device="cuda:0",
         )
-        
+
         async def extract_frames():
             for frame in video.frames():
                 yield frame
-        
+
         results = await pipeline.process(extract_frames())
     """
 
@@ -451,11 +455,11 @@ class EncodingPipeline(Generic[T, R]):
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> list[R]:
         """Process items through the encoding pipeline.
-        
+
         Args:
             items: Async iterable of input items
             progress_callback: Optional callback(processed, total)
-            
+
         Returns:
             List of encoded results in original order
         """
@@ -468,9 +472,7 @@ class EncodingPipeline(Generic[T, R]):
 
         # Run producer and consumer concurrently
         producer_task = asyncio.create_task(self._produce(items))
-        consumer_task = asyncio.create_task(
-            self._consume(progress_callback)
-        )
+        consumer_task = asyncio.create_task(self._consume(progress_callback))
 
         await asyncio.gather(producer_task, consumer_task)
 
@@ -516,7 +518,7 @@ class EncodingPipeline(Generic[T, R]):
                 results = await self.encoder_fn(batch_data)
 
                 # Store results with indices
-                for idx, result in zip(batch_indices, results):
+                for idx, result in zip(batch_indices, results, strict=False):
                     self._results.append((idx, result))
 
                 processed += len(batch)
@@ -531,21 +533,20 @@ class EncodingPipeline(Generic[T, R]):
 
 
 # Type alias for async iterables
-from typing import AsyncIterable as AsyncIterableType
 
 
 class DualStreamPipeline:
     """Orchestrates parallel spatial + temporal encoding.
-    
+
     Runs both streams concurrently, maximizing GPU utilization.
-    
+
     Example:
         pipeline = DualStreamPipeline(
             clip_encoder=clip_scorer,
             xclip_encoder=xclip_encoder,
             device_manager=device_manager,
         )
-        
+
         spatial_embs, temporal_embs = await pipeline.process(video_path)
     """
 
@@ -565,21 +566,17 @@ class DualStreamPipeline:
         progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> tuple[list[Any], list[Any]]:
         """Process video through both streams concurrently.
-        
+
         Args:
             video_path: Path to video file
             progress_callback: Optional callback(stream, processed, total)
-            
+
         Returns:
             Tuple of (spatial_embeddings, temporal_embeddings)
         """
         # Run both streams concurrently
-        spatial_task = asyncio.create_task(
-            self._process_spatial(video_path, progress_callback)
-        )
-        temporal_task = asyncio.create_task(
-            self._process_temporal(video_path, progress_callback)
-        )
+        spatial_task = asyncio.create_task(self._process_spatial(video_path, progress_callback))
+        temporal_task = asyncio.create_task(self._process_temporal(video_path, progress_callback))
 
         spatial_results, temporal_results = await asyncio.gather(
             spatial_task,

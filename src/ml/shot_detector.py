@@ -5,9 +5,10 @@ scene changes in videos using color histogram differences with adaptive
 thresholding. This reduces redundant VLM calls by avoiding analysis of
 frames within the same visual scene.
 """
+
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 import cv2
 import numpy as np
@@ -34,10 +35,10 @@ class HistogramConfig:
 
 class ShotDetector:
     """Detects scene boundaries in video using histogram analysis.
-    
+
     Uses chi-squared histogram comparison with adaptive thresholding
     to identify significant visual changes between frames.
-    
+
     Example:
         detector = ShotDetector()
         boundaries = detector.detect_from_video("video.mp4")
@@ -54,10 +55,10 @@ class ShotDetector:
 
     def compute_histogram(self, frame: NDArray[np.uint8]) -> NDArray[np.float32]:
         """Compute normalized color histogram for a frame.
-        
+
         Args:
             frame: BGR image array from OpenCV
-            
+
         Returns:
             Flattened, normalized histogram array
         """
@@ -88,11 +89,11 @@ class ShotDetector:
         hist2: NDArray[np.float32],
     ) -> float:
         """Compare two histograms using chi-squared distance.
-        
+
         Args:
             hist1: First histogram
             hist2: Second histogram
-            
+
         Returns:
             Chi-squared distance (0 = identical, higher = more different)
         """
@@ -100,7 +101,7 @@ class ShotDetector:
         epsilon = 1e-10
         diff = hist1 - hist2
         sum_hist = hist1 + hist2 + epsilon
-        chi_squared = np.sum((diff ** 2) / sum_hist) / 2
+        chi_squared = np.sum((diff**2) / sum_hist) / 2
 
         return float(chi_squared)
 
@@ -109,10 +110,10 @@ class ShotDetector:
         frames: Sequence[NDArray[np.uint8]],
     ) -> list[SceneBoundary]:
         """Detect shot boundaries from a sequence of frames.
-        
+
         Args:
             frames: List of BGR frame arrays
-            
+
         Returns:
             List of detected scene boundaries with confidence scores
         """
@@ -176,11 +177,11 @@ class ShotDetector:
         sample_fps: float | None = None,
     ) -> list[SceneBoundary]:
         """Detect shot boundaries directly from a video file.
-        
+
         Args:
             video_path: Path to video file
             sample_fps: Sample rate (default: settings.frame_extraction_fps)
-            
+
         Returns:
             List of detected scene boundaries
         """
@@ -240,13 +241,13 @@ class ShotDetector:
         frame_index: int,
     ) -> SceneBoundary | None:
         """Detect shot boundary in streaming mode (frame by frame).
-        
+
         Useful for real-time processing or memory-constrained scenarios.
-        
+
         Args:
             frame: Current BGR frame
             frame_index: Index of current frame
-            
+
         Returns:
             SceneBoundary if a boundary is detected, None otherwise
         """

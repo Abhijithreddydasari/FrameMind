@@ -1,8 +1,6 @@
 # FrameMind Development Stack
 # Local-first Docker Compose configuration
 
-version: "3.9"
-
 services:
   # ============ API Server ============
   api:
@@ -10,9 +8,10 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: development
+    env_file: ../.env
     container_name: framemind-api
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ../src:/app/src:ro
       - ../data:/app/data
@@ -43,6 +42,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.worker
       target: development
+    env_file: ../.env
     container_name: framemind-worker
     volumes:
       - ../src:/app/src:ro
@@ -72,10 +72,10 @@ services:
     image: redis:8.0-alpine
     container_name: framemind-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis-data:/data
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction
     networks:
       - framemind-net
     restart: unless-stopped
@@ -90,7 +90,7 @@ services:
     image: rediscommander/redis-commander:latest
     container_name: framemind-redis-ui
     ports:
-      - "8081:8081"
+      - "127.0.0.1:8081:8081"
     environment:
       - REDIS_HOSTS=local:redis:6379
     depends_on:

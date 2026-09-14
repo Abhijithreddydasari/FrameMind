@@ -1,4 +1,5 @@
 """Abstract VLM client with provider implementations."""
+
 import base64
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -27,7 +28,7 @@ class VLMResponse:
 
 class VLMClient(ABC):
     """Abstract VLM client interface.
-    
+
     Provides a consistent interface for different VLM providers
     (OpenAI, Anthropic, etc.) with built-in retry logic.
     """
@@ -40,12 +41,12 @@ class VLMClient(ABC):
         **kwargs: Any,
     ) -> VLMResponse:
         """Analyze a single image.
-        
+
         Args:
             image: Image data (bytes, base64 string, or path)
             prompt: Analysis prompt
             **kwargs: Provider-specific options
-            
+
         Returns:
             VLM response with analysis
         """
@@ -59,12 +60,12 @@ class VLMClient(ABC):
         **kwargs: Any,
     ) -> VLMResponse:
         """Analyze multiple images together.
-        
+
         Args:
             images: List of images
             prompt: Analysis prompt
             **kwargs: Provider-specific options
-            
+
         Returns:
             VLM response with analysis
         """
@@ -73,10 +74,10 @@ class VLMClient(ABC):
     @classmethod
     def create(cls, provider: str | None = None) -> "VLMClient":
         """Factory method to create appropriate client.
-        
+
         Args:
             provider: Provider name (openai, anthropic)
-            
+
         Returns:
             Configured VLM client
         """
@@ -160,10 +161,12 @@ class OpenAIVLMClient(VLMClient):
 
         for image in images:
             image_url = self._encode_image(image)
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": image_url},
-            })
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": image_url},
+                }
+            )
 
         messages = [{"role": "user", "content": content}]
 
@@ -204,9 +207,9 @@ class OpenAIVLMClient(VLMClient):
                 )
 
             except httpx.TimeoutException:
-                raise VLMTimeoutError("OpenAI request timed out")
+                raise VLMTimeoutError("OpenAI request timed out") from None
             except httpx.HTTPStatusError as e:
-                raise VLMError(f"OpenAI API error: {e.response.text}")
+                raise VLMError(f"OpenAI API error: {e.response.text}") from e
 
 
 class AnthropicVLMClient(VLMClient):
@@ -324,6 +327,6 @@ class AnthropicVLMClient(VLMClient):
                 )
 
             except httpx.TimeoutException:
-                raise VLMTimeoutError("Anthropic request timed out")
+                raise VLMTimeoutError("Anthropic request timed out") from None
             except httpx.HTTPStatusError as e:
-                raise VLMError(f"Anthropic API error: {e.response.text}")
+                raise VLMError(f"Anthropic API error: {e.response.text}") from e

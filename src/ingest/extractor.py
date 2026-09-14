@@ -1,7 +1,8 @@
 """Frame extraction from video files."""
+
+from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Generator
 
 import cv2
 import numpy as np
@@ -25,15 +26,15 @@ class ExtractedFrame:
 
 class FrameExtractor:
     """Extracts frames from video at configurable rate.
-    
+
     Supports both batch and streaming extraction modes.
-    
+
     Example:
         extractor = FrameExtractor(fps=2.0)
-        
+
         # Batch extraction
         frames = extractor.extract_all("video.mp4")
-        
+
         # Streaming extraction
         for frame in extractor.extract_stream("video.mp4"):
             process(frame)
@@ -52,10 +53,10 @@ class FrameExtractor:
         video_path: str | Path,
     ) -> list[ExtractedFrame]:
         """Extract all frames at configured FPS.
-        
+
         Args:
             video_path: Path to video file
-            
+
         Returns:
             List of extracted frames with metadata
         """
@@ -66,17 +67,17 @@ class FrameExtractor:
         video_path: str | Path,
     ) -> Generator[ExtractedFrame, None, None]:
         """Stream frames from video.
-        
+
         Memory-efficient generator for large videos.
-        
+
         Args:
             video_path: Path to video file
-            
+
         Yields:
             ExtractedFrame objects
         """
         path = Path(video_path)
-        
+
         if not path.exists():
             raise FrameExtractionError(f"Video not found: {path}")
 
@@ -141,11 +142,11 @@ class FrameExtractor:
         timestamps_ms: list[int],
     ) -> list[ExtractedFrame]:
         """Extract frames at specific timestamps.
-        
+
         Args:
             video_path: Path to video file
             timestamps_ms: List of timestamps in milliseconds
-            
+
         Returns:
             List of extracted frames
         """
@@ -193,13 +194,13 @@ class FrameExtractor:
         quality: int = 95,
     ) -> list[Path]:
         """Save extracted frames to disk.
-        
+
         Args:
             frames: List of extracted frames
             output_dir: Output directory
             format: Image format (jpg, png)
             quality: JPEG quality (1-100)
-            
+
         Returns:
             List of saved file paths
         """
@@ -212,10 +213,7 @@ class FrameExtractor:
             filename = f"frame_{frame_data.index:06d}.{format}"
             filepath = output_dir / filename
 
-            if format.lower() == "jpg":
-                params = [cv2.IMWRITE_JPEG_QUALITY, quality]
-            else:
-                params = []
+            params = [cv2.IMWRITE_JPEG_QUALITY, quality] if format.lower() == "jpg" else []
 
             cv2.imwrite(str(filepath), frame_data.frame, params)
             saved_paths.append(filepath)

@@ -1,11 +1,11 @@
-
 """X-CLIP temporal encoder for video understanding.
 
 Provides clip-level temporal embeddings using X-CLIP model,
 with sliding window extraction and batched GPU encoding.
 """
+
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +16,7 @@ from numpy.typing import NDArray
 from src.core.config import settings
 from src.core.exceptions import MLModelError, ProcessingError
 from src.core.logging import get_logger
-from src.ml.parallel_encoder import DeviceAllocation, get_device_manager
+from src.ml.parallel_encoder import get_device_manager
 
 logger = get_logger(__name__)
 
@@ -67,9 +67,9 @@ class ClipEmbedding:
 
 class VideoClipExtractor:
     """Extracts sliding window clips from video.
-    
+
     Uses OpenCV or Decord for efficient video decoding.
-    
+
     Example:
         extractor = VideoClipExtractor(config)
         clips = extractor.extract("video.mp4")
@@ -86,7 +86,8 @@ class VideoClipExtractor:
     def _check_decord(self) -> bool:
         """Check if decord is available."""
         try:
-            import decord
+            import decord  # noqa: F401 -- optional decoder availability probe
+
             return True
         except ImportError:
             logger.info("Decord not available, using OpenCV for video decoding")
@@ -94,10 +95,10 @@ class VideoClipExtractor:
 
     def extract(self, video_path: str | Path) -> list[VideoClip]:
         """Extract clips from video file.
-        
+
         Args:
             video_path: Path to video file
-            
+
         Returns:
             List of extracted video clips
         """
@@ -259,14 +260,14 @@ class VideoClipExtractor:
 
 class XCLIPEncoder:
     """X-CLIP encoder for temporal video understanding.
-    
+
     Wraps the X-CLIP model from Hugging Face for batched
     video clip encoding with GPU optimization.
-    
+
     Example:
         encoder = XCLIPEncoder()
         await encoder.load_model()
-        
+
         embeddings = encoder.encode_clips(clips)
         text_embedding = encoder.encode_text("person running")
     """
@@ -276,8 +277,10 @@ class XCLIPEncoder:
         model_name: str | None = None,
         device: str | None = None,
         batch_size: int | None = None,
+        revision: str | None = None,
     ) -> None:
         self.model_name = model_name or settings.xclip_model
+        self.revision = revision or settings.model_revision
         self._device = device
         self._batch_size = batch_size or settings.temporal_batch_size
 
@@ -319,8 +322,6 @@ class XCLIPEncoder:
             return
 
         try:
-            from transformers import XCLIPModel, XCLIPProcessor
-
             logger.info(
                 "Loading X-CLIP model",
                 model=self.model_name,
@@ -328,24 +329,23 @@ class XCLIPEncoder:
             )
 
             # Load in a thread to avoid blocking
-            loop = asyncio.get_event_loop()
-            self._processor, self._model = await loop.run_in_executor(
-                None, self._load_model_sync
-            )
+            from src.core.concurrency import run_blocking
+
+            self._processor, self._model = await run_blocking(self._load_model_sync)
 
             self._loaded = True
             logger.info("X-CLIP model loaded successfully")
 
         except Exception as e:
             logger.error("Failed to load X-CLIP model", error=str(e))
-            raise MLModelError(f"Failed to load X-CLIP model: {e}")
+            raise MLModelError(f"Failed to load X-CLIP model: {e}") from e
 
     def _load_model_sync(self) -> tuple[Any, Any]:
         """Synchronous model loading."""
         from transformers import XCLIPModel, XCLIPProcessor
 
-        processor = XCLIPProcessor.from_pretrained(self.model_name)
-        model = XCLIPModel.from_pretrained(self.model_name)
+        processor = XCLIPProcessor.from_pretrained(self.model_name, revision=self.revision)
+        model = XCLIPModel.from_pretrained(self.model_name, revision=self.revision)
         model.to(self.device)
         model.eval()
 
@@ -361,10 +361,10 @@ class XCLIPEncoder:
         clips: list[VideoClip],
     ) -> list[ClipEmbedding]:
         """Encode video clips to embeddings.
-        
+
         Args:
             clips: List of video clips
-            
+
         Returns:
             List of clip embeddings
         """
@@ -388,6 +388,9 @@ class XCLIPEncoder:
 
     def _encode_batch(self, clips: list[VideoClip]) -> list[ClipEmbedding]:
         """Encode a batch of clips."""
+        expected = self._model.config.vision_config.num_frames
+        if any(len(clip.frames) != expected for clip in clips):
+            raise ValueError(f"Checkpoint requires {expected} frames per clip")
         # Prepare video tensors
         # X-CLIP expects: list of (T, C, H, W) tensors
         videos = []
@@ -397,17 +400,27 @@ class XCLIPEncoder:
             videos.append(list(clip.frames))
 
         # Process through X-CLIP
-        inputs = self._processor(
+        inputs = self._processor.image_processor.preprocess(
             videos=videos,
             return_tensors="pt",
-            padding=True,
         )
 
         # Move to device
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         with torch.no_grad():
-            video_features = self._model.get_video_features(**inputs)
+            # Transformers 4.57's convenience method omits return_dict on MIT and
+            # then reads pooler_output from a tuple. Use the same projection path
+            # with an explicit return format for both model components.
+            pixels = inputs["pixel_values"]
+            batch_size, num_frames, channels, height, width = pixels.shape
+            vision = self._model.vision_model(
+                pixel_values=pixels.reshape(-1, channels, height, width), return_dict=True
+            )
+            projected = self._model.visual_projection(vision.pooler_output)
+            video_features = self._model.mit(
+                projected.reshape(batch_size, num_frames, -1), return_dict=True
+            ).pooler_output
             # Normalize
             video_features = video_features / video_features.norm(dim=-1, keepdim=True)
 
@@ -432,10 +445,10 @@ class XCLIPEncoder:
 
     def encode_text(self, text: str) -> NDArray[np.float32]:
         """Encode text query for temporal matching.
-        
+
         Args:
             text: Query text
-            
+
         Returns:
             Normalized text embedding
         """
@@ -462,11 +475,11 @@ class XCLIPEncoder:
         config: ClipConfig | None = None,
     ) -> list[ClipEmbedding]:
         """Extract clips and encode in one step.
-        
+
         Args:
             video_path: Path to video file
             config: Optional clip extraction config
-            
+
         Returns:
             List of clip embeddings
         """
@@ -482,9 +495,7 @@ class XCLIPEncoder:
 
         # Encode clips
         loop = asyncio.get_event_loop()
-        embeddings = await loop.run_in_executor(
-            None, self.encode_clips, clips
-        )
+        embeddings = await loop.run_in_executor(None, self.encode_clips, clips)
 
         return embeddings
 
@@ -494,11 +505,11 @@ class XCLIPEncoder:
         query: str,
     ) -> list[tuple[int, float]]:
         """Score clip relevance against a text query.
-        
+
         Args:
             clip_embeddings: List of clip embeddings
             query: Text query
-            
+
         Returns:
             List of (clip_index, score) sorted by score descending
         """
@@ -535,6 +546,7 @@ class XCLIPEncoder:
             self._loaded = False
 
             import gc
+
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()

@@ -13,7 +13,7 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -30,17 +30,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --upgrade pip setuptools wheel
 
 # Copy dependency file
-COPY pyproject.toml ./
+COPY pyproject.toml README.md requirements.lock ./
+COPY src/ ./src/
 
 # Install dependencies (without dev dependencies)
-RUN pip install --no-cache-dir . \
-    && pip install --no-cache-dir .[postgres]
+RUN pip install --no-cache-dir -r requirements.lock && pip install --no-deps .
 
 # ============ Production Stage ============
 FROM base as production
 
 # Create non-root user
-RUN groupadd -r framemind && useradd -r -g framemind framemind
+RUN groupadd -r framemind && useradd -r -m -g framemind framemind
 
 # Copy installed packages from builder
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
@@ -69,8 +69,9 @@ CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 FROM base as development
 
 # Install dev dependencies
-COPY pyproject.toml ./
-RUN pip install --no-cache-dir -e ".[dev]"
+COPY pyproject.toml README.md requirements.lock ./
+COPY src/ ./src/
+RUN pip install --no-cache-dir -r requirements.lock && pip install --no-deps -e .
 
 # Copy application code
 COPY . .

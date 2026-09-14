@@ -1,9 +1,11 @@
 """Metadata storage using SQLAlchemy (SQLite/PostgreSQL)."""
-from datetime import datetime
-from typing import Any, Iterable
+
+from collections.abc import Iterable
+from datetime import datetime, timedelta
+from typing import Any
 from uuid import UUID
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, Text, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -25,27 +27,29 @@ class VideoJobModel(Base):
     status: Mapped[str] = mapped_column(String(20), default="pending")
     video_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    
+
     # Video metadata
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     fps: Mapped[float | None] = mapped_column(Float, nullable=True)
     frame_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    
+
     # Processing state
     progress: Mapped[float] = mapped_column(Float, default=0.0)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
-    
+
     # Results
     keyframe_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     scene_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     result_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -98,11 +102,11 @@ class TemporalEmbeddingModel(Base):
 
 class MetadataStore:
     """Async metadata storage using SQLAlchemy.
-    
+
     Example:
         store = MetadataStore()
         await store.initialize()
-        
+
         await store.create_job(job_id, {"filename": "video.mp4"})
         job = await store.get_job(job_id)
     """
@@ -120,6 +124,12 @@ class MetadataStore:
         """Create database tables."""
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            # Additive migration: legacy tables and recordings are preserved.
+            from sqlalchemy.dialects.postgresql import insert as postgres_insert
+            from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+            insert = sqlite_insert if self.engine.dialect.name == "sqlite" else postgres_insert
+            await conn.execute(insert(SchemaVersion).values(version=1).on_conflict_do_nothing())
 
     async def create_job(self, job_id: UUID, data: dict[str, Any]) -> None:
         """Create a new job record."""
@@ -129,6 +139,7 @@ class MetadataStore:
                 status=data.get("status", "pending"),
                 video_path=data.get("video_path"),
                 filename=data.get("filename"),
+                result_data=data.get("result_data"),
             )
             session.add(job)
             await session.commit()
@@ -138,28 +149,25 @@ class MetadataStore:
         async with self.async_session() as session:
             job = await session.get(VideoJobModel, str(job_id))
             if job:
-                return {
-                    "id": job.id,
-                    "status": job.status,
-                    "video_path": job.video_path,
-                    "filename": job.filename,
-                    "progress": job.progress,
-                    "error": job.error,
-                    "created_at": job.created_at.isoformat(),
-                    "updated_at": job.updated_at.isoformat(),
-                }
+                result = {c.name: getattr(job, c.name) for c in VideoJobModel.__table__.columns}
+                for key in ("created_at", "updated_at", "completed_at"):
+                    if result[key]:
+                        result[key] = result[key].isoformat()
+                result["pipeline"] = job.result_data or {"needs_reindex": True}
+                return result
             return None
 
     async def update_job(self, job_id: UUID, updates: dict[str, Any]) -> None:
         """Update job fields."""
         async with self.async_session() as session:
-            job = await session.get(VideoJobModel, str(job_id))
-            if job:
-                for key, value in updates.items():
-                    if hasattr(job, key):
-                        setattr(job, key, value)
-                job.updated_at = datetime.utcnow()
-                await session.commit()
+            values = {k: v for k, v in updates.items() if k in VideoJobModel.__table__.columns}
+            values["updated_at"] = datetime.utcnow()
+            statement = update(VideoJobModel).where(VideoJobModel.id == str(job_id))
+            # A running task must never undo cancellation.
+            if updates.get("status") != "cancelled":
+                statement = statement.where(VideoJobModel.status != "cancelled")
+            await session.execute(statement.values(**values))
+            await session.commit()
 
     async def save_query(
         self,
@@ -190,6 +198,14 @@ class MetadataStore:
     ) -> None:
         """Persist frame embeddings for a job."""
         async with self.async_session() as session:
+            embeddings = list(embeddings)
+            for item in embeddings:
+                await session.execute(
+                    delete(FrameEmbeddingModel).where(
+                        FrameEmbeddingModel.job_id == str(job_id),
+                        FrameEmbeddingModel.frame_index == item["frame_index"],
+                    )
+                )
             rows = [
                 FrameEmbeddingModel(
                     job_id=str(job_id),
@@ -249,13 +265,19 @@ class MetadataStore:
         embeddings: list[dict[str, Any]],
     ) -> None:
         """Save temporal (clip) embeddings for a job.
-        
+
         Args:
             job_id: Job identifier
             embeddings: List of embedding dicts with clip_index, start/end frames, etc.
         """
         async with self.async_session() as session:
             for emb in embeddings:
+                await session.execute(
+                    delete(TemporalEmbeddingModel).where(
+                        TemporalEmbeddingModel.job_id == str(job_id),
+                        TemporalEmbeddingModel.clip_index == emb["clip_index"],
+                    )
+                )
                 temp_emb = TemporalEmbeddingModel(
                     job_id=str(job_id),
                     clip_index=emb["clip_index"],
@@ -298,3 +320,114 @@ class MetadataStore:
     async def close(self) -> None:
         """Close database connection."""
         await self.engine.dispose()
+
+    async def save_chunk(self, job_id: str, generation: str, start_ms: int, path: str) -> None:
+        async with self.async_session() as session:
+            await session.merge(
+                ChunkArtifact(job_id=job_id, generation=generation, start_ms=start_ms, path=path)
+            )
+            await session.commit()
+
+    async def chunks(self, job_id: str, generation: str) -> list[str]:
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(ChunkArtifact.path)
+                .where(ChunkArtifact.job_id == job_id, ChunkArtifact.generation == generation)
+                .order_by(ChunkArtifact.start_ms)
+            )
+            return list(result.scalars())
+
+    async def put_query_task(self, query_id: str, job_id: str, request: dict) -> None:
+        async with self.async_session() as session:
+            session.add(QueryTask(id=query_id, job_id=job_id, request=request, status="pending"))
+            await session.commit()
+
+    async def update_query_task(self, query_id: str, **values: Any) -> None:
+        async with self.async_session() as session:
+            await session.execute(
+                update(QueryTask).where(QueryTask.id == query_id).values(**values)
+            )
+            await session.commit()
+
+    async def get_query_task(self, query_id: str) -> dict | None:
+        async with self.async_session() as session:
+            task = await session.get(QueryTask, query_id)
+            return (
+                {c.name: getattr(task, c.name) for c in QueryTask.__table__.columns}
+                if task
+                else None
+            )
+
+    async def unfinished_jobs(self) -> list[dict]:
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(VideoJobModel.id).where(
+                    VideoJobModel.status.in_(["pending", "processing", "extracting", "analyzing"])
+                )
+            )
+            ids = list(result.scalars())
+        return [job for job_id in ids if (job := await self.get_job(UUID(job_id)))]
+
+    async def acquire_lease(self, job_id: str, token: str, seconds: int) -> bool:
+        from sqlalchemy.dialects.postgresql import insert as postgres_insert
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        insert = sqlite_insert if self.engine.dialect.name == "sqlite" else postgres_insert
+        now = datetime.utcnow()
+        async with self.async_session() as session:
+            statement = insert(WorkLease).values(
+                job_id=job_id, token=token, expires_at=now + timedelta(seconds=seconds)
+            )
+            statement = statement.on_conflict_do_update(
+                index_elements=["job_id"],
+                set_={"token": token, "expires_at": now + timedelta(seconds=seconds)},
+                where=WorkLease.expires_at < now,
+            )
+            result = await session.execute(statement)
+            await session.commit()
+            return result.rowcount == 1
+
+    async def release_lease(self, job_id: str, token: str):
+        async with self.async_session() as session:
+            await session.execute(
+                delete(WorkLease).where(WorkLease.job_id == job_id, WorkLease.token == token)
+            )
+            await session.commit()
+
+    async def unfinished_queries(self):
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(QueryTask.id).where(QueryTask.status.in_(["pending", "processing"]))
+            )
+            return list(result.scalars())
+
+
+class SchemaVersion(Base):
+    __tablename__ = "schema_versions"
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+
+class ChunkArtifact(Base):
+    __tablename__ = "chunk_artifacts"
+    job_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    generation: Mapped[str] = mapped_column(String(36), primary_key=True)
+    start_ms: Mapped[int] = mapped_column(Integer, primary_key=True)
+    path: Mapped[str] = mapped_column(Text)
+
+
+class QueryTask(Base):
+    __tablename__ = "query_tasks"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(36), index=True)
+    request: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(20))
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class WorkLease(Base):
+    __tablename__ = "work_leases"
+    job_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    token: Mapped[str] = mapped_column(String(36))
+    expires_at: Mapped[datetime] = mapped_column(DateTime)

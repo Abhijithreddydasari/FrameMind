@@ -1,4 +1,5 @@
 """Multi-frame response aggregation for VLM outputs."""
+
 from dataclasses import dataclass, field
 
 from src.core.logging import get_logger
@@ -12,24 +13,24 @@ class AggregatedResponse:
     """Aggregated response from multiple VLM calls."""
 
     answer: str
-    confidence: float
+    confidence: float | None
     sources: list[FrameSource]
     raw_responses: list[str] = field(default_factory=list)
 
 
 class ResponseAggregator:
     """Aggregates and synthesizes multi-frame VLM responses.
-    
+
     When analyzing multiple frames separately, this class
     combines the responses into a coherent answer.
-    
+
     Example:
         aggregator = ResponseAggregator()
-        
+
         # Collect responses from individual frame analyses
         aggregator.add_response(frame1, "Person entering room")
         aggregator.add_response(frame2, "Person sitting at desk")
-        
+
         # Get combined result
         result = aggregator.aggregate("What does the person do?")
     """
@@ -44,7 +45,7 @@ class ResponseAggregator:
         relevance_score: float = 1.0,
     ) -> None:
         """Add a frame analysis response.
-        
+
         Args:
             frame: Analyzed frame
             response: VLM response text
@@ -58,14 +59,14 @@ class ResponseAggregator:
         combine_mode: str = "synthesize",
     ) -> AggregatedResponse:
         """Aggregate collected responses.
-        
+
         Args:
             query: Original query for context
             combine_mode: How to combine responses:
                 - "synthesize": Create coherent narrative
                 - "list": List individual observations
                 - "vote": Find consensus answer
-                
+
         Returns:
             Aggregated response with sources
         """
@@ -170,7 +171,7 @@ class ResponseAggregator:
 
 class BatchAggregator:
     """Aggregates responses from batch VLM calls.
-    
+
     When multiple frames are sent to VLM in a single call,
     this extracts and structures the combined response.
     """
@@ -181,14 +182,14 @@ class BatchAggregator:
         frames: list[Frame],
     ) -> list[FrameSource]:
         """Extract frame references from VLM response.
-        
+
         Attempts to match mentions of frames/timestamps to
         the actual frames for proper attribution.
-        
+
         Args:
             response: VLM response text
             frames: Frames that were analyzed
-            
+
         Returns:
             List of frame sources with relevance scores
         """
@@ -214,11 +215,11 @@ class BatchAggregator:
         frames: list[Frame],
     ) -> AggregatedResponse:
         """Structure a batch VLM response.
-        
+
         Args:
             response: Raw VLM response
             frames: Analyzed frames
-            
+
         Returns:
             Structured aggregated response
         """
@@ -226,7 +227,7 @@ class BatchAggregator:
 
         return AggregatedResponse(
             answer=response,
-            confidence=0.8,  # Default confidence for batch responses
+            confidence=None,
             sources=sources,
             raw_responses=[response],
         )

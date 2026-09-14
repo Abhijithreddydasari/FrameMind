@@ -1,11 +1,13 @@
 """Unit tests for X-CLIP temporal encoder."""
+
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 
+from src.core.exceptions import MLModelError, ProcessingError
 from src.ml.temporal_encoder import (
     ClipConfig,
     ClipEmbedding,
@@ -21,7 +23,7 @@ class TestClipConfig:
     def test_default_values(self) -> None:
         """Test default configuration values."""
         config = ClipConfig()
-        
+
         assert config.window_frames == 16
         assert config.clip_fps == 8.0
         assert config.stride == 0.5
@@ -50,7 +52,7 @@ class TestVideoClip:
     def test_creation(self) -> None:
         """Test VideoClip creation."""
         frames = np.random.randint(0, 255, (16, 224, 224, 3), dtype=np.uint8)
-        
+
         clip = VideoClip(
             index=0,
             frames=frames,
@@ -59,7 +61,7 @@ class TestVideoClip:
             start_ms=0,
             end_ms=2000,
         )
-        
+
         assert clip.index == 0
         assert clip.frames.shape == (16, 224, 224, 3)
         assert clip.start_frame == 0
@@ -72,7 +74,7 @@ class TestVideoClipExtractor:
     def test_initialization(self) -> None:
         """Test extractor initialization."""
         extractor = VideoClipExtractor()
-        
+
         assert extractor.config is not None
         assert extractor.config.window_frames > 0
 
@@ -80,15 +82,15 @@ class TestVideoClipExtractor:
         """Test extractor with custom config."""
         config = ClipConfig(window_frames=8, clip_fps=4.0)
         extractor = VideoClipExtractor(config)
-        
+
         assert extractor.config.window_frames == 8
         assert extractor.config.clip_fps == 4.0
 
     def test_extract_nonexistent_file(self) -> None:
         """Test extraction from non-existent file raises error."""
         extractor = VideoClipExtractor()
-        
-        with pytest.raises(Exception):  # ProcessingError
+
+        with pytest.raises(ProcessingError):  # ProcessingError
             extractor.extract("/nonexistent/video.mp4")
 
     @patch("cv2.VideoCapture")
@@ -99,8 +101,8 @@ class TestVideoClipExtractor:
         mock_cap.return_value = mock_instance
         mock_instance.isOpened.return_value = True
         mock_instance.get.side_effect = lambda prop: {
-            5: 30.0,   # FPS
-            7: 300,    # Frame count
+            5: 30.0,  # FPS
+            7: 300,  # Frame count
         }.get(prop, 0)
 
         # Create fake frames
@@ -114,7 +116,7 @@ class TestVideoClipExtractor:
         with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
             # Touch the file so it exists
             Path(f.name).touch()
-            
+
             clips = extractor.extract(f.name)
 
         # Should have extracted some clips
@@ -127,7 +129,7 @@ class TestClipEmbedding:
     def test_creation(self) -> None:
         """Test ClipEmbedding creation."""
         embedding = np.random.randn(512).astype(np.float32)
-        
+
         clip_emb = ClipEmbedding(
             clip_index=0,
             embedding=embedding,
@@ -136,7 +138,7 @@ class TestClipEmbedding:
             start_ms=0,
             end_ms=2000,
         )
-        
+
         assert clip_emb.clip_index == 0
         assert clip_emb.embedding.shape == (512,)
         assert clip_emb.start_ms == 0
@@ -149,7 +151,7 @@ class TestXCLIPEncoder:
     def test_initialization(self) -> None:
         """Test encoder initialization."""
         encoder = XCLIPEncoder()
-        
+
         assert encoder.model_name == "microsoft/xclip-base-patch32"
         assert encoder._loaded is False
 
@@ -175,9 +177,9 @@ class TestXCLIPEncoder:
         encoder._loaded = True
         encoder._model = MagicMock()
         encoder._processor = MagicMock()
-        
+
         await encoder.unload_model()
-        
+
         assert encoder._loaded is False
         assert encoder._model is None
         assert encoder._processor is None
@@ -185,15 +187,15 @@ class TestXCLIPEncoder:
     def test_encode_clips_not_loaded(self) -> None:
         """Test encoding fails when model not loaded."""
         encoder = XCLIPEncoder()
-        
-        with pytest.raises(Exception):  # MLModelError
+
+        with pytest.raises(MLModelError):  # MLModelError
             encoder.encode_clips([])
 
     def test_encode_text_not_loaded(self) -> None:
         """Test text encoding fails when model not loaded."""
         encoder = XCLIPEncoder()
-        
-        with pytest.raises(Exception):
+
+        with pytest.raises(MLModelError):
             encoder.encode_text("test query")
 
     def test_score_relevance_empty(self) -> None:
@@ -202,7 +204,7 @@ class TestXCLIPEncoder:
         encoder._loaded = True
         encoder._processor = MagicMock()
         encoder._model = MagicMock()
-        
+
         # Mock encode_text
         with patch.object(encoder, "encode_text", return_value=np.zeros(512, dtype=np.float32)):
             result = encoder.score_relevance([], "test query")
@@ -217,9 +219,9 @@ class TestDualStreamIntegration:
         # CLIP and X-CLIP base models both produce 512-dim embeddings
         spatial_emb = np.random.randn(512).astype(np.float32)
         temporal_emb = np.random.randn(512).astype(np.float32)
-        
+
         assert spatial_emb.shape == temporal_emb.shape
-        
+
         # Test cosine similarity works
         similarity = np.dot(spatial_emb, temporal_emb) / (
             np.linalg.norm(spatial_emb) * np.linalg.norm(temporal_emb)

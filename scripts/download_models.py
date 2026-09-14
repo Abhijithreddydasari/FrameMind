@@ -7,6 +7,7 @@ without network access during inference.
 Usage:
     python scripts/download_models.py
 """
+
 import sys
 from pathlib import Path
 
@@ -17,18 +18,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 def download_clip_model() -> None:
     """Download CLIP model and processor."""
     from transformers import CLIPModel, CLIPProcessor
-    
+
     from src.core.config import settings
-    
+
     print(f"Downloading CLIP model: {settings.clip_model}")
-    
+
     # This will download and cache the model
     processor = CLIPProcessor.from_pretrained(settings.clip_model)
     model = CLIPModel.from_pretrained(settings.clip_model)
-    
-    print(f"Model downloaded successfully!")
-    print(f"Cache location: ~/.cache/huggingface/")
-    
+
+    print("Model downloaded successfully!")
+    print("Cache location: ~/.cache/huggingface/")
+
     # Verify model works
     print("Verifying model...")
     inputs = processor(
@@ -48,12 +49,12 @@ def main() -> None:
     print("FrameMind Model Downloader")
     print("=" * 50)
     print()
-    
+
     try:
         download_clip_model()
         print()
         print("All models downloaded successfully!")
-        
+
     except Exception as e:
         print(f"Error downloading models: {e}")
         sys.exit(1)

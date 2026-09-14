@@ -6,6 +6,7 @@ Provides:
 - Sliding window rate limiting
 - Embedding cache
 """
+
 import json
 import time
 from datetime import datetime
@@ -24,29 +25,29 @@ logger = get_logger(__name__)
 
 class RedisCache:
     """Redis-based cache with rate limiting support.
-    
+
     Provides async methods for:
     - General key-value caching
     - Job state management
     - Sliding window rate limiting
     - Embedding storage
-    
+
     Example:
         cache = RedisCache()
         await cache.connect()
-        
+
         # Cache a value
         await cache.set("key", {"data": "value"}, ttl=3600)
-        
+
         # Check rate limit
         allowed = await cache.check_rate_limit("user:123")
-        
+
         await cache.close()
     """
 
     def __init__(self, url: str | None = None) -> None:
         """Initialize Redis cache.
-        
+
         Args:
             url: Redis URL (defaults to settings.redis_url_str)
         """
@@ -79,7 +80,7 @@ class RedisCache:
 
         except Exception as e:
             logger.error("Failed to connect to Redis", error=str(e))
-            raise CacheError(f"Redis connection failed: {e}")
+            raise CacheError(f"Redis connection failed: {e}") from e
 
     async def close(self) -> None:
         """Close Redis connection."""
@@ -100,10 +101,10 @@ class RedisCache:
 
     async def get(self, key: str) -> dict[str, Any] | None:
         """Get a cached value.
-        
+
         Args:
             key: Cache key
-            
+
         Returns:
             Cached value or None if not found
         """
@@ -126,12 +127,12 @@ class RedisCache:
         ttl: int | None = None,
     ) -> bool:
         """Set a cached value.
-        
+
         Args:
             key: Cache key
             value: Value to cache (will be JSON serialized)
             ttl: Time to live in seconds (None for no expiry)
-            
+
         Returns:
             True if successful
         """
@@ -148,10 +149,10 @@ class RedisCache:
 
     async def delete(self, key: str) -> bool:
         """Delete a cached value.
-        
+
         Args:
             key: Cache key
-            
+
         Returns:
             True if key was deleted
         """
@@ -173,20 +174,23 @@ class RedisCache:
 
     async def set_job(self, job_id: UUID, data: dict[str, Any]) -> bool:
         """Store job state.
-        
+
         Args:
             job_id: Job identifier
             data: Job data
-            
+
         Returns:
             True if successful
         """
         key = f"job:{job_id}"
         try:
-            await self.client.hset(key, mapping={
-                k: json.dumps(v) if isinstance(v, (dict, list)) else str(v)
-                for k, v in data.items()
-            })
+            await self.client.hset(
+                key,
+                mapping={
+                    k: json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+                    for k, v in data.items()
+                },
+            )
             # Set TTL of 7 days for job data
             await self.client.expire(key, 86400 * 7)
             return True
@@ -196,10 +200,10 @@ class RedisCache:
 
     async def get_job(self, job_id: UUID) -> dict[str, Any] | None:
         """Get job state.
-        
+
         Args:
             job_id: Job identifier
-            
+
         Returns:
             Job data or None if not found
         """
@@ -215,20 +219,23 @@ class RedisCache:
 
     async def update_job(self, job_id: UUID, updates: dict[str, Any]) -> bool:
         """Update job fields.
-        
+
         Args:
             job_id: Job identifier
             updates: Fields to update
-            
+
         Returns:
             True if successful
         """
         key = f"job:{job_id}"
         try:
-            await self.client.hset(key, mapping={
-                k: json.dumps(v) if isinstance(v, (dict, list)) else str(v)
-                for k, v in updates.items()
-            })
+            await self.client.hset(
+                key,
+                mapping={
+                    k: json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+                    for k, v in updates.items()
+                },
+            )
             return True
         except Exception as e:
             logger.error("Failed to update job", job_id=str(job_id), error=str(e))
@@ -242,13 +249,13 @@ class RedisCache:
         error: str | None = None,
     ) -> bool:
         """Update job status with optional progress and error.
-        
+
         Args:
             job_id: Job identifier
             status: New status
             progress: Optional progress value
             error: Optional error message
-            
+
         Returns:
             True if successful
         """
@@ -265,10 +272,10 @@ class RedisCache:
 
     async def delete_job(self, job_id: UUID) -> bool:
         """Delete job state.
-        
+
         Args:
             job_id: Job identifier
-            
+
         Returns:
             True if successful
         """
@@ -293,15 +300,15 @@ class RedisCache:
         window: int | None = None,
     ) -> tuple[bool, int, int]:
         """Check and update rate limit using sliding window.
-        
+
         Args:
             identifier: Unique identifier (e.g., IP, user ID)
             limit: Request limit (defaults to settings)
             window: Time window in seconds (defaults to settings)
-            
+
         Returns:
             Tuple of (allowed, remaining, reset_time)
-            
+
         Raises:
             RateLimitExceededError: If rate limit is exceeded
         """
@@ -351,11 +358,11 @@ class RedisCache:
         window: int | None = None,
     ) -> dict[str, int]:
         """Get current rate limit status without incrementing.
-        
+
         Args:
             identifier: Unique identifier
             window: Time window in seconds
-            
+
         Returns:
             Dict with limit info
         """
@@ -394,13 +401,13 @@ class RedisCache:
         ttl: int = 86400 * 7,  # 7 days
     ) -> bool:
         """Cache a frame embedding.
-        
+
         Args:
             job_id: Job identifier
             frame_index: Frame index
             embedding: Embedding vector
             ttl: Time to live in seconds
-            
+
         Returns:
             True if successful
         """
@@ -423,11 +430,11 @@ class RedisCache:
         frame_index: int,
     ) -> list[float] | None:
         """Get a cached embedding.
-        
+
         Args:
             job_id: Job identifier
             frame_index: Frame index
-            
+
         Returns:
             Embedding vector or None
         """
@@ -451,10 +458,10 @@ class RedisCache:
         job_id: UUID,
     ) -> dict[int, list[float]]:
         """Get all cached embeddings for a job.
-        
+
         Args:
             job_id: Job identifier
-            
+
         Returns:
             Dict mapping frame index to embedding
         """

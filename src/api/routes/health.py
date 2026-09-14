@@ -1,8 +1,9 @@
 """Health check endpoints."""
+
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel
 
 from src.core.config import settings
@@ -45,7 +46,7 @@ async def liveness() -> dict[str, str]:
 
 
 @router.get("/ready", response_model=ReadinessResponse)
-async def readiness(request: Request) -> ReadinessResponse:
+async def readiness(request: Request, response: Response) -> ReadinessResponse:
     """Kubernetes readiness probe - checks all dependencies."""
     checks: dict[str, bool] = {}
 
@@ -54,20 +55,38 @@ async def readiness(request: Request) -> ReadinessResponse:
 
     # Check Redis connectivity (non-blocking)
     try:
-        from src.cache.redis_cache import RedisCache
-
-        cache = RedisCache()
-        await cache.connect()
-        await cache.ping()
-        checks["redis"] = True
-        await cache.close()
+        checks["redis"] = await request.app.state.cache.ping()
     except Exception:
         checks["redis"] = False
 
     # Check storage path exists
     checks["storage"] = settings.storage_path.exists()
+    try:
+        from sqlalchemy import text
+
+        async with request.app.state.metadata_store.engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+        checks["database"] = True
+        checks["queue"] = bool(await request.app.state.queue.ping())
+    except Exception:
+        checks["database"] = False
+        checks["queue"] = False
+
+    if settings.autogaze_enabled:
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=5) as client:
+                result = await client.get(
+                    settings.autogaze_url.rstrip("/") + "/health",
+                    headers={"Authorization": f"Bearer {settings.autogaze_token}"},
+                )
+                checks["autogaze"] = result.is_success and bool(result.json().get("cuda"))
+        except Exception:
+            checks["autogaze"] = False
 
     all_ready = all(checks.values())
+    response.status_code = 200 if all_ready else 503
 
     return ReadinessResponse(
         ready=all_ready,

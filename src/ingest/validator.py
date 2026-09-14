@@ -1,4 +1,5 @@
 """Video format validation and metadata extraction."""
+
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,17 +24,17 @@ class ValidationResult:
 
 class VideoValidator:
     """Validates video files for processing.
-    
+
     Checks:
     - File exists and is readable
     - Format is supported
     - Size is within limits
     - Video is decodable
-    
+
     Example:
         validator = VideoValidator()
         result = validator.validate("video.mp4")
-        
+
         if result.valid:
             print(f"Duration: {result.metadata.duration_ms}ms")
     """
@@ -44,10 +45,10 @@ class VideoValidator:
 
     def validate(self, video_path: str | Path) -> ValidationResult:
         """Validate a video file.
-        
+
         Args:
             video_path: Path to video file
-            
+
         Returns:
             ValidationResult with metadata if valid
         """
@@ -79,14 +80,14 @@ class VideoValidator:
         # Try to open and read metadata
         try:
             metadata = self._extract_metadata(path, size_bytes)
-            
+
             logger.info(
                 "Video validated",
                 path=str(path),
                 duration_ms=metadata.duration_ms,
                 resolution=f"{metadata.width}x{metadata.height}",
             )
-            
+
             return ValidationResult(valid=True, metadata=metadata)
 
         except Exception as e:
@@ -99,7 +100,7 @@ class VideoValidator:
     def _extract_metadata(self, path: Path, size_bytes: int) -> VideoMetadata:
         """Extract video metadata using OpenCV."""
         cap = cv2.VideoCapture(str(path))
-        
+
         if not cap.isOpened():
             raise VideoValidationError(f"Could not open video: {path}")
 
@@ -133,13 +134,13 @@ class VideoValidator:
 
     def validate_or_raise(self, video_path: str | Path) -> VideoMetadata:
         """Validate video and raise exception if invalid.
-        
+
         Args:
             video_path: Path to video file
-            
+
         Returns:
             VideoMetadata if valid
-            
+
         Raises:
             VideoValidationError: If validation fails
             UnsupportedFormatError: If format not supported
