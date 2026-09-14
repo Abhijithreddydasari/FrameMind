@@ -1,15 +1,15 @@
 # FrameMind
 
-Search long recordings, retrieve relevant time intervals, then inspect selected evidence at original resolution. Version 0.2 is a research prototype with a resumable indexing pipeline and an optional AutoGaze video backend.
+Search long videos, find relevant moments, then inspect them at original resolution. Version 0.2 is a research prototype. Indexing can resume after interruption; AutoGaze is optional.
 
 ## What works
 
-- PTS-based decoding across the recording, in bounded chunks; original files are retained.
-- Spatial CLIP and optional temporal X-CLIP embeddings, persisted in immutable NumPy/FAISS shards.
-- Weighted reciprocal-rank fusion into candidate intervals; cached indexes are reused across queries.
-- Detailed inspection of a chosen interval, optionally cropped, with source timestamps and validated evidence IDs.
-- Shared synchronous/asynchronous query implementation, durable job status, checkpoints, retries, cancellation, and worker recovery.
-- Optional NVILA + AutoGaze inference on a separate Linux NVIDIA host. It is off by default and never selected automatically.
+- Process the full recording in small chunks using source timestamps. Keep the original file.
+- Save CLIP and optional X-CLIP embeddings in NumPy/FAISS indexes.
+- Combine both search rankings and reuse loaded indexes across queries.
+- Inspect a chosen interval or crop, with timestamps and checked evidence references.
+- Run direct or queued queries, with saved progress, retries, cancellation and recovery.
+- Optionally analyze video with NVILA + AutoGaze on a separate Linux NVIDIA host. It is off by default.
 
 ## Features
 
@@ -17,7 +17,7 @@ This release does not implement live-camera monitoring, object tracking, vehicle
 
 ## Architecture
 
-The API and worker share local recordings, persisted indexes, and SQL metadata. Redis schedules work and provides expendable caches. Both synchronous and queued queries use the same query service. The optional GPU service receives selected evidence only.
+The API and worker share recordings, saved indexes and SQL metadata. Redis queues work and caches results. Direct and queued queries use the same service. The optional GPU service receives selected evidence.
 
 ```mermaid
 flowchart TB
@@ -51,7 +51,7 @@ flowchart TB
   answer --> client
 ```
 
-Shot detection and the older frame-selection helpers remain available, but the long-recording worker uses chunk encoding directly. The remote GPU backend is a second-stage analysis option; it does not replace local indexing.
+Older shot-detection and frame-selection helpers remain available. The worker encodes chunks directly; the GPU backend analyzes evidence after retrieval.
 
 ## Processing workflow
 
@@ -84,7 +84,7 @@ flowchart TD
 
 ## Query workflow
 
-Retrieval finds candidate intervals using both embedding streams. Detailed inspection can revisit a chosen interval directly, without repeating retrieval. Evidence is presented to the analysis backend in time order.
+Search combines both embedding streams. Inspection revisits a chosen interval without repeating the search. The analysis backend receives evidence in time order.
 
 ```mermaid
 flowchart TD
@@ -190,7 +190,7 @@ Inspection intervals are limited to 60 seconds; crop coordinates are normalized 
 
 ## Recovery and existing data
 
-SQL stores authoritative progress. Each worker task publishes one chunk and checkpoints it before scheduling the next. Startup and five-minute recovery scans reschedule unfinished jobs; SQL leases fence competing tasks. Redis stores queue state and optional caches, not the only copy of embeddings.
+SQL saves progress after each chunk. Recovery runs at startup and every five minutes to restart unfinished jobs. SQL leases prevent competing workers from publishing the same work. Embeddings survive Redis loss.
 
 `DELETE /api/v1/ingest/JOB_ID` cancels active work but retains the recording. Schema initialization adds tables without deleting legacy data. Legacy indexes require explicit reindexing:
 
@@ -315,6 +315,8 @@ See [GPU setup and evaluation](docs/autogaze.md). The adapter applies patch prun
 The [upstream model card](https://huggingface.co/nvidia/NVILA-8B-HD-Video) identifies the checkpoint as research/development only and lists noncommercial terms. Keep this backend experimental; the FrameMind code license does not override model terms.
 
 ## Validation
+
+For public data, start with the [LongShOTBench pilot](benchmarks/longshot/README.md). It selects one visual question from one recording by default, estimates workload and runs retrieval without paid model calls. Reference answers stay separate. This limited subset does not produce an official benchmark score.
 
 ```sh
 ruff check src tests scripts
