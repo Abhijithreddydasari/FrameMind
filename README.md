@@ -11,6 +11,8 @@ Search long recordings, retrieve relevant time intervals, then inspect selected 
 - Shared synchronous/asynchronous query implementation, durable job status, checkpoints, retries, cancellation, and worker recovery.
 - Optional NVILA + AutoGaze inference on a separate Linux NVIDIA host. It is off by default and never selected automatically.
 
+## Features
+
 This release does not implement live-camera monitoring, object tracking, vehicle identity matching across cameras, or automatic incident alerts. Semantic retrieval proposes candidates; it cannot certify that an event did not occur elsewhere in a recording.
 
 ## Architecture
