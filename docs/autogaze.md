@@ -1,6 +1,6 @@
 # Optional AutoGaze backend
 
-The local pipeline retrieves intervals first. Only selected evidence is sent to this service. AutoGaze removes redundant patches inside the NVILA vision pipeline; it is not a tracker or an incident detector. Benefits depend on footage redundancy, evidence size, inference cost, transfer time, and whether pruning preserves the detail needed by the question.
+FrameMind retrieves intervals, then sends selected evidence to NVILA. AutoGaze skips redundant image patches during analysis. It does not track objects or detect incidents. Speed gains depend on repeated content, transfer time and how much useful detail survives pruning.
 
 ## Separate Linux GPU host
 
@@ -39,7 +39,7 @@ Evidence bundles contain selected JPEGs, actual source timestamps, and the quest
 
 Create an evaluation manifest like `evaluation/manifest.example.json`, using actual local video paths and completed job IDs. Use independent recordings for tuning and held-out evaluation. Include short events, small objects, occlusion, poor lighting, camera motion, repeated backgrounds, and questions where the correct response is insufficient evidence. Mark safety-relevant events as critical. Do not tune on the held-out set.
 
-Warm the models with separate tuning cases before collecting measurements. Use the same service/model revisions, frame budget, tile budget, and footage for a pair. Run each benchmark more than once with alternating order to expose warm-up and load effects. The harness disables API answer caching and records errors rather than dropping them.
+Warm the models on tuning cases first. Keep model revisions, frame and tile budgets, and footage fixed for each pair. Repeat runs in alternating order to check warm-up and load effects. The harness disables answer caching and records errors.
 
 ```sh
 python -m scripts.evaluate run evaluation/manifest.json --mode retrieve --output evaluation/retrieval.json
@@ -59,4 +59,6 @@ python -m scripts.evaluate report --baseline evaluation/no-gaze.json --accelerat
 
 Eligibility requires both comparisons to pass: at least 100 paired held-out questions from at least three recordings, all manually scored, no failed runs, no additional critical misses, no more than two percentage points of accuracy loss, and at least 1.25x p95 latency improvement. The pruning ablation also requires matching timestamps, frame/tile budgets, and model revisions. Without the pipeline measurements, eligibility stays false. These are engineering acceptance thresholds, not statistical guarantees. Examine per-category results and repeated runs before deciding.
 
-Promotion is manual. The evaluator never changes settings. Keep the feature off if it fails the gates. A faster inference stage alone does not establish faster end-to-end search. Commercial deployment also requires resolving the checkpoint's noncommercial/research restrictions with the model provider; see the [model card](https://huggingface.co/nvidia/NVILA-8B-HD-Video).
+Enable AutoGaze manually only after reviewing both comparisons; the evaluator never changes settings. Faster inference alone does not prove faster search. Commercial use also requires resolving the checkpoint's noncommercial/research terms; see the [model card](https://huggingface.co/nvidia/NVILA-8B-HD-Video).
+
+For a small public-data trial, use the [LongShOTBench pilot](../benchmarks/longshot/README.md). Its visual-only subset is too small for these promotion gates.
